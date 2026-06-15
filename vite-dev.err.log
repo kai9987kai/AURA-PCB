@@ -1,0 +1,11 @@
+[2m10:16:23[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mTypeError: Cannot read properties of undefined (reading 'push')
+    at http://127.0.0.1:5174/src/simulation/spiceSolver.ts:596:28
+    at Array.forEach (<anonymous>)
+    at runSpiceSimulation (http://127.0.0.1:5174/src/simulation/spiceSolver.ts:540:14)
+    at handleRunSimulation (http://127.0.0.1:5174/src/components/SimulationPanel.tsx:24:16)
+    at executeDispatch (http://127.0.0.1:5174/node_modules/.vite/deps/react-dom_client.js?v=1047577e:9140:5)
+    at runWithFiberInDEV (http://127.0.0.1:5174/node_modules/.vite/deps/react-dom_client.js?v=1047577e:850:66)
+    at processDispatchQueue (http://127.0.0.1:5174/node_modules/.vite/deps/react-dom_client.js?v=1047577e:9166:27)
+    at http://127.0.0.1:5174/node_modules/.vite/deps/react-dom_client.js?v=1047577e:9453:5
+    at batchedUpdates$1 (http://127.0.0.1:5174/node_modules/.vite/deps/react-dom_client.js?v=1047577e:2043:12)
+    at dispatchEventForPluginEventSystem (http://127.0.0.1:5174/node_modules/.vite/deps/react-dom_client.js?v=1047577e:9239:4)
