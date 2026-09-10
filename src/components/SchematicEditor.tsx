@@ -1,12 +1,54 @@
+import React, { useState, useRef, useEffect } from 'react';
+import type { SchematicComponent, Wire, SchematicData, Pin } from '../types/pcb';
+import { ZoomIn, ZoomOut, RotateCcw, Trash2 } from 'lucide-react';
+
+interface SchematicEditorProps {
+  data: SchematicData;
+  selectedComponent: SchematicComponent | null;
+  onSelectComponent: (comp: SchematicComponent | null) => void;
+  onUpdateComponent: (comp: SchematicComponent) => void;
+  onDeleteComponent?: (id: string) => void;
+  onAddWire: (wire: Wire) => void;
+  onDeleteWire: (id: string) => void;
+  simVoltages?: Record<string, number>; // current time-step voltages
+  simCurrents?: Record<string, number>; // current time-step currents
+}
+
+export const SchematicEditor: React.FC<SchematicEditorProps> = ({
+  data,
+  selectedComponent,
+  onSelectComponent,
+  onUpdateComponent,
+  onDeleteComponent,
+  onAddWire,
+  onDeleteWire,
+  simVoltages,
+  simCurrents
+}) => {
+  const [draggedComp, setDraggedComp] = useState<string | null>(null);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const [wireStart, setWireStart] = useState<{ compId: string; pinId: string; x: number; y: number } | null>(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1.0);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [startPan, setStartPan] = useState({ x: 0, y: 0 });
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  // SVG dimensions
+  const width = 800;
+  const height = 550;
 
   // Convert client coordinates to SVG coordinates
   const getSVGCoords = (e: React.MouseEvent) => {
     if (!svgRef.current) return { x: 0, y: 0 };
     const rect = svgRef.current.getBoundingClientRect();
-    const matrix = svgRef.current.getScreenCTM();
-    const position = matrix ? new DOMPoint(e.clientX, e.clientY).matrixTransform(matrix.inverse()) : { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    const x = Math.round(position.x / 10) * 10;
-    const y = Math.round(position.y / 10) * 10;
+    const clientX = e.clientX - rect.left;
+    const clientY = e.clientY - rect.top;
+    const svgX = (clientX - pan.x) / zoom;
+    const svgY = (clientY - pan.y) / zoom;
+    const x = Math.round(svgX / 10) * 10;
+    const y = Math.round(svgY / 10) * 10;
     return { x, y };
   };
 
