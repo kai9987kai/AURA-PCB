@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { PCBLayoutData, PCBTrace, Pad, PCBVia } from '../types/pcb';
-import { Route, CheckCircle, Layers, Ruler, Trash2, CircleDot } from 'lucide-react';
+import { Route, CheckCircle, Layers, Ruler, Trash2, CircleDot, ZoomIn, ZoomOut, RotateCcw, Sparkles } from 'lucide-react';
 import { analyzeBoard, BOARD_RULES, getPadBoardCoords, pointSegmentDistance, segmentDistance } from '../analysis/boardChecks';
 
 interface LayoutEditorProps {
@@ -29,6 +29,13 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
   const [showGroundPour, setShowGroundPour] = useState(false);
   const [routeNotice, setRouteNotice] = useState('');
   const [showMeasurements, setShowMeasurements] = useState(true);
+  const [snap45, setSnap45] = useState(true);
+  const [boardWInput, setBoardWInput] = useState(layoutData.boardWidth.toString());
+  const [boardHInput, setBoardHInput] = useState(layoutData.boardHeight.toString());
+  const [zoom, setZoom] = useState(1.0);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isCanvasPanning, setIsCanvasPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Conversion: 1mm = 8px
@@ -37,17 +44,51 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
   const boardHeightPx = layoutData.boardHeight * SCALE;
   const activeTraceWidth = Math.max(0.15, parseFloat(traceWidthInput) || 0.4);
 
-  // Translate click coords to mm
+  // Keep board inputs in sync if layoutData changes externally
+  useEffect(() => {
+    setBoardWInput(layoutData.boardWidth.toString());
+    setBoardHInput(layoutData.boardHeight.toString());
+  }, [layoutData.boardWidth, layoutData.boardHeight]);
+
+  // Translate click coords to mm with zoom and pan
   const getMMCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current) return { x: 0, y: 0 };
     const rect = canvasRef.current.getBoundingClientRect();
-    const x = (e.clientX - rect.left) * layoutData.boardWidth / rect.width;
-    const y = (e.clientY - rect.top) * layoutData.boardHeight / rect.height;
-    // Snap to 0.5mm grid
+    const clientX = e.clientX - rect.left;
+    const clientY = e.clientY - rect.top;
+
+    const centerX = rect.width / 2 + pan.x;
+    const centerY = rect.height / 2 + pan.y;
+
+    const mmX = (clientX - centerX) / (SCALE * zoom) + layoutData.boardWidth / 2;
+    const mmY = (clientY - centerY) / (SCALE * zoom) + layoutData.boardHeight / 2;
+
     return {
-      x: Math.round(x * 2) / 2,
-      y: Math.round(y * 2) / 2
+      x: Math.round(mmX * 2) / 2,
+      y: Math.round(mmY * 2) / 2
     };
+  };
+
+  // Snap proposed next point to horizontal, vertical, or 45-degree diagonal
+  const snapTo45 = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+    if (!snap45) return to;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const absDx = Math.abs(dx);
+    const absDy = Math.abs(dy);
+
+    if (absDx > 2.4 * absDy) {
+      return { x: to.x, y: from.y }; // Horizontal
+    } else if (absDy > 2.4 * absDx) {
+      return { x: from.x, y: to.y }; // Vertical
+    } else {
+      // 45-degree diagonal
+      const d = Math.min(absDx, absDy);
+      return {
+        x: Math.round((from.x + Math.sign(dx) * d) * 2) / 2,
+        y: Math.round((from.y + Math.sign(dy) * d) * 2) / 2,
+      };
+    }
   };
 
   const calculateTraceLength = (trace: PCBTrace) => {
@@ -80,11 +121,28 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Clear
-    ctx.fillStyle = '#09090b';
-    ctx.fillRect(0, 0, boardWidthPx, boardHeightPx);
+    // Viewport dimensions
+    const vW = canvas.width;
+    const vH = canvas.height;
 
-    // Draw Grid dots
+    // Clear viewport
+    ctx.fillStyle = '#09090b';
+    ctx.fillRect(0, 0, vW, vH);
+
+    ctx.save();
+    // Center board and apply pan/zoom
+    ctx.translate(vW / 2 + pan.x, vH / 2 + pan.y);
+    ctx.scale(zoom, zoom);
+    ctx.translate(-boardWidthPx / 2, -boardHeightPx / 2);
+
+    // Board substrate outline
+    ctx.fillStyle = '#101014';
+    ctx.fillRect(0, 0, boardWidthPx, boardHeightPx);
+    ctx.strokeStyle = '#27272a';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(0, 0, boardWidthPx, boardHeightPx);
+
+    // Draw Grid dots (every 2mm)
     ctx.fillStyle = '#27272a';
     for (let x = 0; x < boardWidthPx; x += SCALE * 2) {
       for (let y = 0; y < boardHeightPx; y += SCALE * 2) {
@@ -94,15 +152,32 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
 
     const { footprints, traces, vias } = layoutData;
 
-    // Ground pour visualization
+    // Ground pour flood visualization with thermal relief
     if (showGroundPour) {
-      ctx.fillStyle = 'rgba(16, 185, 129, 0.08)';
-      ctx.fillRect(0, 0, boardWidthPx, boardHeightPx);
-      ctx.strokeStyle = 'rgba(16, 185, 129, 0.28)';
+      const pourColor = activeLayer === 'top' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(59, 130, 246, 0.12)';
+      ctx.fillStyle = pourColor;
+      ctx.fillRect(2, 2, boardWidthPx - 4, boardHeightPx - 4);
+      ctx.strokeStyle = activeLayer === 'top' ? 'rgba(239, 68, 68, 0.35)' : 'rgba(59, 130, 246, 0.35)';
       ctx.lineWidth = 1;
-      ctx.setLineDash([8, 6]);
-      ctx.strokeRect(4, 4, boardWidthPx - 8, boardHeightPx - 8);
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(2, 2, boardWidthPx - 4, boardHeightPx - 4);
       ctx.setLineDash([]);
+
+      // Thermal relief spokes for GND pads
+      footprints.forEach(fp => {
+        fp.pads.filter(p => p.net === 'GND').forEach(pad => {
+          const pc = getPadBoardCoords(fp, pad);
+          const px = pc.x * SCALE;
+          const py = pc.y * SCALE;
+          const r = (pad.diameter / 2 + 0.5) * SCALE;
+          ctx.strokeStyle = '#10b981';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(px - r, py); ctx.lineTo(px + r, py);
+          ctx.moveTo(px, py - r); ctx.lineTo(px, py + r);
+          ctx.stroke();
+        });
+      });
     }
 
     // 1. Draw Traces
@@ -110,7 +185,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
       if (trace.points.length < 2) return;
       ctx.beginPath();
       ctx.lineWidth = trace.width * SCALE;
-      ctx.strokeStyle = trace.layer === 'top' ? '#ef4444' : '#3b82f6'; // Red for top layer, blue for bottom
+      ctx.strokeStyle = trace.layer === 'top' ? '#ef4444' : '#3b82f6';
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
@@ -132,124 +207,136 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         const labelWidth = ctx.measureText(label).width + 8;
-        ctx.fillStyle = 'rgba(9, 9, 11, 0.82)';
+        ctx.fillStyle = 'rgba(9, 9, 11, 0.85)';
         ctx.fillRect(labelX - labelWidth / 2, labelY - 8, labelWidth, 16);
         ctx.fillStyle = trace.layer === 'top' ? '#fecaca' : '#bfdbfe';
         ctx.fillText(label, labelX, labelY);
       }
     });
 
-    // 2. Draw Active Manual Routing Trace
+    // 2. Draw Active Manual Routing Trace with 45-degree preview
     if (isRouting && routingStart) {
       ctx.beginPath();
       ctx.lineWidth = activeTraceWidth * SCALE;
-      ctx.strokeStyle = activeLayer === 'top' ? 'rgba(239, 68, 68, 0.7)' : 'rgba(59, 130, 246, 0.7)';
+      ctx.strokeStyle = activeLayer === 'top' ? 'rgba(239, 68, 68, 0.8)' : 'rgba(59, 130, 246, 0.8)';
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.setLineDash([4, 4]);
 
       ctx.moveTo(routingStart.x * SCALE, routingStart.y * SCALE);
-      routingPoints.forEach(pt => {
-        ctx.lineTo(pt.x * SCALE, pt.y * SCALE);
-      });
-      ctx.lineTo(mousePos.x * SCALE, mousePos.y * SCALE);
+      routingPoints.forEach(p => ctx.lineTo(p.x * SCALE, p.y * SCALE));
+
+      const lastPoint = routingPoints.length > 0 ? routingPoints[routingPoints.length - 1] : routingStart;
+      const previewPt = snap45 ? snapTo45(lastPoint, mousePos) : mousePos;
+      ctx.lineTo(previewPt.x * SCALE, previewPt.y * SCALE);
       ctx.stroke();
       ctx.setLineDash([]);
     }
 
-    // 3. Draw Footprints
+    // 3. Draw Footprints and Pads
     footprints.forEach(fp => {
-      const isSelected = selectedCompId === fp.id;
-      
       ctx.save();
       ctx.translate(fp.x * SCALE, fp.y * SCALE);
       ctx.rotate((fp.rotation * Math.PI) / 180);
 
-      // Footprint outline
-      ctx.strokeStyle = isSelected ? '#06b6d4' : '#10b981'; // Cyan if selected, Emerald for silkscreen
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(
-        (-fp.width / 2) * SCALE,
-        (-fp.height / 2) * SCALE,
-        fp.width * SCALE,
-        fp.height * SCALE
-      );
+      const isSelected = selectedCompId === fp.id;
+      ctx.strokeStyle = isSelected ? '#06b6d4' : '#52525b';
+      ctx.lineWidth = isSelected ? 2 : 1;
+      ctx.fillStyle = 'rgba(24, 24, 27, 0.7)';
 
-      // Text label (Designator)
-      ctx.fillStyle = '#ffffff';
-      ctx.font = '9px monospace';
+      const w = fp.width * SCALE;
+      const h = fp.height * SCALE;
+      ctx.fillRect(-w / 2, -h / 2, w, h);
+      ctx.strokeRect(-w / 2, -h / 2, w, h);
+
+      // Silkscreen designator label
+      ctx.fillStyle = isSelected ? '#22d3ee' : '#a1a1aa';
+      ctx.font = '10px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(fp.id, 0, (-fp.height / 2 - 1.5) * SCALE);
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(fp.id, 0, -h / 2 - 2);
 
-      // Draw component type/value symbol
-      ctx.fillStyle = 'rgba(16, 185, 129, 0.15)';
-      ctx.fillRect(
-        (-fp.width / 2 + 0.5) * SCALE,
-        (-fp.height / 2 + 0.5) * SCALE,
-        (fp.width - 1.0) * SCALE,
-        (fp.height - 1.0) * SCALE
-      );
-
-      ctx.restore();
-
-      // Draw Pads
+      // Render Pads
       fp.pads.forEach(pad => {
-        const pc = getPadBoardCoords(fp, pad);
-        
-        // Pad copper ring
+        const px = pad.relX * SCALE;
+        const py = pad.relY * SCALE;
+        const padR = (pad.diameter / 2) * SCALE;
+        const holeR = (pad.holeDiameter / 2) * SCALE;
+
+        // Outer copper pad
         ctx.beginPath();
-        ctx.arc(pc.x * SCALE, pc.y * SCALE, (pad.diameter / 2) * SCALE, 0, 2 * Math.PI);
-        ctx.fillStyle = '#f59e0b'; // Gold copper color
+        ctx.arc(px, py, padR, 0, 2 * Math.PI);
+        ctx.fillStyle = pad.holeDiameter > 0 ? '#f59e0b' : '#fbbf24'; // Through-hole vs SMD gold
         ctx.fill();
 
-        // Through hole (if present)
+        // Inner drill hole if through-hole
         if (pad.holeDiameter > 0) {
           ctx.beginPath();
-          ctx.arc(pc.x * SCALE, pc.y * SCALE, (pad.holeDiameter / 2) * SCALE, 0, 2 * Math.PI);
-          ctx.fillStyle = '#09090b'; // board background hole
+          ctx.arc(px, py, holeR, 0, 2 * Math.PI);
+          ctx.fillStyle = '#09090b';
           ctx.fill();
         }
 
-        // Net labeling text inside pad
+        // Net name text inside or beside pad
         if (pad.net) {
-          ctx.fillStyle = '#000000';
+          ctx.fillStyle = '#18181b';
           ctx.font = '7px monospace';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(pad.id, pc.x * SCALE, pc.y * SCALE);
+          ctx.fillText(pad.net.slice(0, 4), px, py);
         }
       });
+
+      ctx.restore();
     });
 
     // 4. Draw Vias
     vias.forEach(via => {
+      const vx = via.x * SCALE;
+      const vy = via.y * SCALE;
+      const viaR = (via.diameter / 2) * SCALE;
+      const drillR = (via.drillDiameter / 2) * SCALE;
+
       ctx.beginPath();
-      ctx.arc(via.x * SCALE, via.y * SCALE, (via.diameter / 2) * SCALE, 0, 2 * Math.PI);
-      ctx.fillStyle = '#06b6d4'; // teal cyan for vias
+      ctx.arc(vx, vy, viaR, 0, 2 * Math.PI);
+      ctx.fillStyle = '#eab308';
       ctx.fill();
 
       ctx.beginPath();
-      ctx.arc(via.x * SCALE, via.y * SCALE, (via.drillDiameter / 2) * SCALE, 0, 2 * Math.PI);
-      ctx.fillStyle = '#09090b'; // hole
+      ctx.arc(vx, vy, drillR, 0, 2 * Math.PI);
+      ctx.fillStyle = '#09090b';
       ctx.fill();
     });
 
-    // Only missing connections remain visible, including GND.
-    ctx.strokeStyle = 'rgba(245, 158, 11, 0.7)';
+    // 5. Draw Ratsnest / Airwires with distance badges
+    ctx.strokeStyle = 'rgba(168, 85, 247, 0.6)';
     ctx.lineWidth = 1;
-    ctx.setLineDash([2, 4]);
-    boardAnalysis.airwires.forEach(({ from, to }) => {
+    ctx.setLineDash([3, 4]);
+    boardAnalysis.airwires.forEach(({ from, to, net }) => {
       ctx.beginPath();
       ctx.moveTo(from.x * SCALE, from.y * SCALE);
       ctx.lineTo(to.x * SCALE, to.y * SCALE);
       ctx.stroke();
+
+      if (showMeasurements) {
+        const midX = ((from.x + to.x) / 2) * SCALE;
+        const midY = ((from.y + to.y) / 2) * SCALE;
+        const dist = Math.hypot(to.x - from.x, to.y - from.y);
+        const txt = `${net} (${dist.toFixed(1)}mm)`;
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#c084fc';
+        ctx.fillText(txt, midX, midY - 4);
+      }
     });
     ctx.setLineDash([]);
 
+    // 6. DRC Issues Rings
     boardAnalysis.issues.forEach(issue => {
       if (issue.x === undefined || issue.y === undefined) return;
       ctx.beginPath();
-      ctx.arc(issue.x * SCALE, issue.y * SCALE, 11, 0, 2 * Math.PI);
+      ctx.arc(issue.x * SCALE, issue.y * SCALE, 12, 0, 2 * Math.PI);
       ctx.strokeStyle = '#ef4444';
       ctx.lineWidth = 2;
       ctx.setLineDash([2, 2]);
@@ -257,10 +344,18 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
       ctx.setLineDash([]);
     });
 
-  }, [layoutData, selectedCompId, routingStart, routingPoints, mousePos, activeLayer, isRouting, drcErrors, showGroundPour, showMeasurements, activeTraceWidth, boardWidthPx, boardHeightPx, boardAnalysis]);
+    ctx.restore();
+  }, [layoutData, selectedCompId, routingStart, routingPoints, mousePos, activeLayer, isRouting, drcErrors, showGroundPour, showMeasurements, activeTraceWidth, boardWidthPx, boardHeightPx, boardAnalysis, zoom, pan, snap45]);
 
   // Handle canvas mouse actions
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Middle-click or Alt+click pans canvas
+    if (e.button === 1 || e.altKey) {
+      setIsCanvasPanning(true);
+      setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      return;
+    }
+
     const mm = getMMCoords(e);
 
     // 1. Check if clicked on a pad (to start routing)
@@ -345,7 +440,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
     });
 
     if (clickedFp) {
-      if (isRouting) return; // ignore footprint drags while routing
+      if (isRouting) return;
       onSelectComponent(clickedFp.id);
       setDraggedFootprint(clickedFp.id);
       setDragOffset({
@@ -356,10 +451,13 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
     }
 
     // 3. Clicked on empty space
-    if (isRouting) {
-      // Lay down intermediate routing corner
-      setRoutingPoints([...routingPoints, mm]);
+    if (isRouting && routingStart) {
+      const lastPoint = routingPoints.length > 0 ? routingPoints[routingPoints.length - 1] : routingStart;
+      const nextPoint = snap45 ? snapTo45(lastPoint, mm) : mm;
+      setRoutingPoints([...routingPoints, nextPoint]);
     } else {
+      setIsCanvasPanning(true);
+      setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
       onSelectComponent(null);
     }
   };
@@ -368,10 +466,17 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
     const mm = getMMCoords(e);
     setMousePos(mm);
 
+    if (isCanvasPanning) {
+      setPan({
+        x: e.clientX - panStart.x,
+        y: e.clientY - panStart.y
+      });
+      return;
+    }
+
     if (draggedFootprint) {
       const updatedFps = layoutData.footprints.map(fp => {
         if (fp.id === draggedFootprint) {
-          // grid snapping of footprint placement (1mm grid)
           const newX = Math.round(mm.x - dragOffset.x);
           const newY = Math.round(mm.y - dragOffset.y);
           return {
@@ -388,6 +493,13 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
 
   const handleMouseUp = () => {
     setDraggedFootprint(null);
+    setIsCanvasPanning(false);
+  };
+
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.15 : 0.85;
+    setZoom(prev => Math.max(0.4, Math.min(4.0, prev * factor)));
   };
 
   const handleDropVia = useCallback(() => {
@@ -450,7 +562,6 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
         onUpdateLayout({ ...layoutData, footprints: updatedFps });
       }
       if (e.key === 'Delete' && selectedCompId) {
-        // Check if selectedCompId matches a trace ID
         if (selectedCompId.startsWith('trace_')) {
           onUpdateLayout({
             ...layoutData,
@@ -467,8 +578,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedCompId, layoutData, onUpdateLayout, isRouting, handleDropVia, onSelectComponent]);
 
-  // Bounded two-dimensional Lee router. Every proposed segment is checked
-  // against actual top copper, including existing segment interiors and vias.
+  // Enhanced multi-layer Lee autorouter
   const triggerAutoroute = () => {
     const gridSpacing = 1;
     const wCells = Math.floor(layoutData.boardWidth / gridSpacing) + 1;
@@ -478,26 +588,34 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
       return;
     }
     const routedTraces = [...layoutData.traces];
+    const routedVias = [...layoutData.vias];
     let searchedCells = 0;
+
     const roundObstacles = [
       ...layoutData.footprints.flatMap(fp => fp.pads.map(pad => ({
-        ...getPadBoardCoords(fp, pad), radius: pad.diameter / 2, net: pad.net,
+        ...getPadBoardCoords(fp, pad),
+        radius: pad.diameter / 2,
+        net: pad.net,
+        isThroughHole: pad.holeDiameter > 0
       }))),
-      ...layoutData.vias.map(via => ({ ...via, radius: via.diameter / 2 })),
+      ...routedVias.map(via => ({ ...via, radius: via.diameter / 2, isThroughHole: true })),
     ];
     const radius = activeTraceWidth / 2;
     const edge = radius + BOARD_RULES.edgeClearance;
     const inside = (p: { x: number; y: number }) => p.x >= edge && p.y >= edge &&
       p.x <= layoutData.boardWidth - edge && p.y <= layoutData.boardHeight - edge;
-    const clearSegment = (a: { x: number; y: number }, b: { x: number; y: number }, net: string) => {
+
+    const clearSegment = (a: { x: number; y: number }, b: { x: number; y: number }, net: string, layer: 'top' | 'bottom') => {
       if (!inside(a) || !inside(b)) return false;
       if (roundObstacles.some(pad => (!pad.net || pad.net !== net) &&
+        (layer === 'top' || pad.isThroughHole) &&
         pointSegmentDistance(pad, a, b) < pad.radius + radius + BOARD_RULES.clearance - 1e-9)) return false;
-      return !routedTraces.some(trace => trace.layer === 'top' && (!trace.net || trace.net !== net) &&
+      return !routedTraces.some(trace => trace.layer === layer && (!trace.net || trace.net !== net) &&
         trace.points.slice(1).some((p, i) => segmentDistance(a, b, trace.points[i], p) <
           trace.width / 2 + radius + BOARD_RULES.clearance - 1e-9));
     };
-    const route = (from: { x: number; y: number }, to: { x: number; y: number }, net: string) => {
+
+    const routeLayer = (from: { x: number; y: number }, to: { x: number; y: number }, net: string, layer: 'top' | 'bottom') => {
       const startC = Math.round(from.x / gridSpacing);
       const startR = Math.round(from.y / gridSpacing);
       const endC = Math.round(to.x / gridSpacing);
@@ -506,12 +624,13 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
       const start = startR * wCells + startC;
       const end = endR * wCells + endC;
       const toPoint = (index: number) => ({ x: index % wCells * gridSpacing, y: Math.floor(index / wCells) * gridSpacing });
-      if (!clearSegment(from, toPoint(start), net) || !clearSegment(toPoint(end), to, net)) return null;
+      if (!clearSegment(from, toPoint(start), net, layer) || !clearSegment(toPoint(end), to, net, layer)) return null;
+
       const parent = new Int32Array(wCells * hCells).fill(-1);
       const queue = [start];
       parent[start] = start;
       let head = 0;
-      while (head < queue.length && parent[end] === -1 && searchedCells < 100_000) {
+      while (head < queue.length && parent[end] === -1 && searchedCells < 80_000) {
         const current = queue[head++];
         searchedCells++;
         const c = current % wCells;
@@ -521,7 +640,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
           const nextR = r + dr;
           if (nextC < 0 || nextR < 0 || nextC >= wCells || nextR >= hCells) continue;
           const next = nextR * wCells + nextC;
-          if (parent[next] !== -1 || !clearSegment(toPoint(current), toPoint(next), net)) continue;
+          if (parent[next] !== -1 || !clearSegment(toPoint(current), toPoint(next), net, layer)) continue;
           parent[next] = current;
           queue.push(next);
         }
@@ -545,29 +664,52 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
       });
       return compact.length >= 2 ? compact : null;
     };
+
     const attempted = new Set<string>();
     let added = 0;
     let attempts = 0;
-    while (attempts < 100 && searchedCells < 100_000) {
-      const analysis = analyzeBoard({ ...layoutData, traces: routedTraces });
+    while (attempts < 120 && searchedCells < 100_000) {
+      const analysis = analyzeBoard({ ...layoutData, traces: routedTraces, vias: routedVias });
       const connection = analysis.airwires.find(wire => !attempted.has(JSON.stringify(wire)));
       if (!connection) break;
       attempted.add(JSON.stringify(connection));
       attempts++;
-      const points = route(connection.from, connection.to, connection.net);
+
+      // Try top layer first
+      let points = routeLayer(connection.from, connection.to, connection.net, 'top');
+      let usedLayer: 'top' | 'bottom' = 'top';
+
+      if (!points) {
+        // Try bottom layer
+        points = routeLayer(connection.from, connection.to, connection.net, 'bottom');
+        if (points) usedLayer = 'bottom';
+      }
+
       if (!points) continue;
-      routedTraces.push({ id: `trace_${crypto.randomUUID()}`, net: connection.net, points, width: activeTraceWidth, layer: 'top' });
+      routedTraces.push({ id: `trace_${crypto.randomUUID()}`, net: connection.net, points, width: activeTraceWidth, layer: usedLayer });
       added++;
     }
-    const missing = analyzeBoard({ ...layoutData, traces: routedTraces }).airwires.length;
-    setRouteNotice(`Added ${added} top-layer routes. ${missing} connections remain${missing ? '; use manual routing and vias where the 1mm grid cannot reach' : ''}.`);
-    onUpdateLayout({ ...layoutData, traces: routedTraces });
+
+    const missing = analyzeBoard({ ...layoutData, traces: routedTraces, vias: routedVias }).airwires.length;
+    setRouteNotice(`Autorouter routed ${added} connections (${missing} remain).`);
+    onUpdateLayout({ ...layoutData, traces: routedTraces, vias: routedVias });
+  };
+
+  const handleApplyBoardSize = () => {
+    const w = parseFloat(boardWInput);
+    const h = parseFloat(boardHInput);
+    if (Number.isFinite(w) && w >= 20 && w <= 300 && Number.isFinite(h) && h >= 20 && h <= 300) {
+      onUpdateLayout({ ...layoutData, boardWidth: Math.round(w), boardHeight: Math.round(h) });
+    } else {
+      setBoardWInput(layoutData.boardWidth.toString());
+      setBoardHInput(layoutData.boardHeight.toString());
+    }
   };
 
   return (
-    <div className="flex-1 bg-zinc-950 flex flex-col relative h-full">
+    <div className="flex-1 bg-zinc-950 flex flex-col relative h-full overflow-hidden select-none">
       {/* Floating Toolbar Controls */}
-      <div className="absolute top-3 left-3 z-10 flex flex-wrap gap-2" style={{ maxWidth: 'calc(100% - 210px)' }}>
+      <div className="absolute top-3 left-3 z-10 flex flex-wrap gap-2" style={{ maxWidth: 'calc(100% - 220px)' }}>
         <div className="px-3 py-1.5 bg-zinc-900/80 backdrop-blur border border-zinc-800 rounded-lg flex items-center gap-3 text-xs text-zinc-400 font-mono">
           <button
             onClick={() => setActiveLayer(activeLayer === 'top' ? 'bottom' : 'top')}
@@ -579,7 +721,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
               className="w-2 h-2 rounded-full"
               style={{ background: activeLayer === 'top' ? '#ef4444' : '#3b82f6' }}
             ></span>
-            Active Layer: <span className="font-bold capitalize">{activeLayer}</span>
+            Active: <span className="font-bold capitalize">{activeLayer}</span>
           </button>
         </div>
 
@@ -589,8 +731,40 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
           <input
             value={traceWidthInput}
             onChange={(e) => setTraceWidthInput(e.target.value)}
-            className="bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-right text-zinc-200 font-mono"
-            style={{ width: 58 }}
+            className="bg-zinc-950 border border-zinc-800 rounded px-2 py-0.5 text-right text-zinc-200 font-mono"
+            style={{ width: 48 }}
+          />
+          <span>mm</span>
+        </div>
+
+        {/* 45 Degree Snap Toggle */}
+        <button
+          onClick={() => setSnap45(!snap45)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-mono text-xs transition-all ${
+            snap45
+              ? 'bg-cyan-950/40 border-cyan-500/50 text-cyan-400 font-bold'
+              : 'bg-zinc-900/80 border-zinc-800 text-zinc-400'
+          }`}
+          title="Snap trace segments to 45° angles"
+        >
+          45° Snap: {snap45 ? 'ON' : 'OFF'}
+        </button>
+
+        {/* Board Size Controls */}
+        <div className="px-3 py-1.5 bg-zinc-900/80 backdrop-blur border border-zinc-800 rounded-lg flex items-center gap-1.5 text-xs text-zinc-400 font-mono">
+          <span>Board:</span>
+          <input
+            value={boardWInput}
+            onChange={(e) => setBoardWInput(e.target.value)}
+            onBlur={handleApplyBoardSize}
+            className="bg-zinc-950 border border-zinc-800 rounded px-1.5 py-0.5 text-right text-zinc-200 font-mono w-11"
+          />
+          <span>×</span>
+          <input
+            value={boardHInput}
+            onChange={(e) => setBoardHInput(e.target.value)}
+            onBlur={handleApplyBoardSize}
+            className="bg-zinc-950 border border-zinc-800 rounded px-1.5 py-0.5 text-right text-zinc-200 font-mono w-11"
           />
           <span>mm</span>
         </div>
@@ -601,7 +775,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
           className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 border border-cyan-500 rounded-lg text-white font-mono text-xs transition-all shadow-lg shadow-cyan-600/20 active:scale-95"
         >
           <Route className="w-3.5 h-3.5" />
-          Run Lee's Autorouter
+          Multi-Layer Autorouter
         </button>
 
         <button
@@ -609,19 +783,22 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
           disabled={!isRouting}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900/80 border border-zinc-800 rounded-lg text-zinc-300 font-mono text-xs transition-all"
           style={{ opacity: isRouting ? 1 : 0.45 }}
-          title="Drop a via at the cursor and switch layers"
+          title="Drop a via (V) and switch layer"
         >
           <CircleDot className="w-3.5 h-3.5 text-amber-500" />
-          Drop Via
+          Via (V)
         </button>
 
         <button
           onClick={() => setShowGroundPour(!showGroundPour)}
-          title="Decorative preview only; no ground copper is generated or exported"
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900/80 border border-zinc-800 rounded-lg text-zinc-300 font-mono text-xs transition-all"
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-mono text-xs transition-all ${
+            showGroundPour
+              ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-400 font-bold'
+              : 'bg-zinc-900/80 border-zinc-800 text-zinc-400'
+          }`}
         >
           <Layers className="w-3.5 h-3.5 text-emerald-400" />
-          Pour Preview {showGroundPour ? 'On' : 'Off'}
+          Copper Flood: {showGroundPour ? 'ON' : 'OFF'}
         </button>
 
         <button
@@ -637,87 +814,67 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
           className="flex items-center gap-1.5 px-3 py-1.5 bg-red-950/40 border border-red-900/50 rounded-lg text-red-400 font-mono text-xs transition-all"
         >
           <Trash2 className="w-3.5 h-3.5" />
-          Clear Routes
+          Clear
         </button>
 
-        {isRouting && (
-          <span className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-950/60 border border-purple-800 rounded-lg text-purple-400 font-mono text-xs animate-pulse">
-            Routing {routingStart?.pad.net}: click pads, click empty space for corners, press V for via
-          </span>
-        )}
+        {/* Zoom Controls */}
+        <div className="flex items-center gap-1 px-2 py-1 bg-zinc-900/80 backdrop-blur border border-zinc-800 rounded-lg text-xs font-mono text-zinc-300">
+          <button
+            onClick={() => setZoom(prev => Math.min(4.0, prev * 1.2))}
+            className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-zinc-200"
+            title="Zoom In"
+          >
+            <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => setZoom(prev => Math.max(0.4, prev / 1.2))}
+            className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-zinc-200"
+            title="Zoom Out"
+          >
+            <ZoomOut className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => { setZoom(1.0); setPan({ x: 0, y: 0 }); }}
+            className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-zinc-200"
+            title="Reset Zoom"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+          <span className="px-1 text-zinc-400">{Math.round(zoom * 100)}%</span>
+        </div>
       </div>
 
-      <div className="absolute top-3 right-3 z-10 px-3 py-1.5 bg-zinc-900/80 backdrop-blur border border-zinc-800 rounded-lg flex flex-col gap-1.5 text-xs font-mono">
-        <div>
-          {drcErrors.length === 0 ? (
-            <span className="text-emerald-400 flex items-center gap-1">
-              <CheckCircle className="w-3.5 h-3.5" /> Board checks clear
-            </span>
-          ) : (
-            <span className="text-red-400 flex items-center gap-1">
-              <AlertTriangleIcon className="w-3.5 h-3.5" /> DRC Violations: {drcErrors.length}
-            </span>
-          )}
-        </div>
-        <div className="text-zinc-500">
-          Routed: <span className="text-zinc-300">{layoutMetrics.routedNets}/{layoutMetrics.routableNets}</span>
-        </div>
-        <div className="text-zinc-500">
-          Copper: <span className="text-zinc-300">{layoutMetrics.totalTraceLength.toFixed(1)}mm</span>
-          <span> / </span>
-          <span className="text-zinc-300">{boardAnalysis.routingCompletion.toFixed(0)}% connected</span>
-        </div>
-        {layoutMetrics.unroutedNets > 0 && (
-          <div className="text-amber-500">Unrouted nets: {layoutMetrics.unroutedNets}</div>
-        )}
-      </div>
-
-      {(routeNotice || showGroundPour) && (
-        <div role="status" className="absolute bottom-3 left-3 z-10 max-w-lg rounded-lg border border-amber-800/60 bg-zinc-950/95 px-3 py-2 text-xs text-amber-300">
-          {routeNotice || 'Pour preview is decorative. GND requires routed copper; no plane is generated or exported.'}
+      {/* Notice bar */}
+      {routeNotice && (
+        <div className="absolute top-16 left-3 z-10 px-3 py-1.5 bg-zinc-900/90 border border-cyan-500/40 rounded-lg text-xs text-cyan-300 font-mono flex items-center gap-2 shadow-xl">
+          <Sparkles className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+          <span>{routeNotice}</span>
+          <button onClick={() => setRouteNotice('')} className="text-zinc-500 hover:text-zinc-300 ml-2">×</button>
         </div>
       )}
 
-      {/* Canvas container */}
-      <div className="flex-1 overflow-auto flex items-center justify-center p-4">
+      {/* Bottom status & coordinates bar */}
+      <div className="absolute bottom-3 left-3 z-10 flex items-center gap-3 px-3 py-1 bg-zinc-900/80 backdrop-blur border border-zinc-800 rounded-lg text-xs font-mono text-zinc-400 shadow-xl">
+        <span>X: <span className="text-zinc-200">{mousePos.x.toFixed(1)}</span> mm</span>
+        <span>Y: <span className="text-zinc-200">{mousePos.y.toFixed(1)}</span> mm</span>
+        <div className="h-3 w-px bg-zinc-800" />
+        <span>Routed: <span className="text-emerald-400">{layoutMetrics.routedNets}/{layoutMetrics.routableNets}</span> nets</span>
+        <span>Trace: <span className="text-cyan-400">{layoutMetrics.totalTraceLength.toFixed(1)}</span> mm</span>
+      </div>
+
+      {/* Canvas Area */}
+      <div className="flex-1 flex items-center justify-center relative overflow-hidden">
         <canvas
           ref={canvasRef}
-          width={boardWidthPx}
-          height={boardHeightPx}
+          width={boardWidthPx + 160}
+          height={boardHeightPx + 160}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-          aria-label="PCB layout canvas. Click a pad to route, V to add a via, Escape to cancel."
-          className="border border-zinc-800 rounded-lg shadow-2xl relative select-none cursor-crosshair max-w-full"
-          onContextMenu={(e) => {
-            e.preventDefault();
-            if (isRouting) {
-              setIsRouting(false);
-              setRoutingStart(null);
-              setRoutingPoints([]);
-            }
-          }}
+          onWheel={handleWheel}
+          className="cursor-crosshair w-full h-full"
         />
       </div>
     </div>
   );
 };
-
-// Internal icon proxy helper for DRC Alert icon
-const AlertTriangleIcon = ({ className }: { className?: string }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className={className}
-  >
-    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
-    <line x1="12" y1="9" x2="12" y2="13" />
-    <line x1="12" y1="17" x2="12.01" y2="17" />
-  </svg>
-);
