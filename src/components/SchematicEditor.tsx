@@ -36,14 +36,18 @@ export const SchematicEditor: React.FC<SchematicEditorProps> = ({
   const getSVGCoords = (e: React.MouseEvent) => {
     if (!svgRef.current) return { x: 0, y: 0 };
     const rect = svgRef.current.getBoundingClientRect();
-    const x = Math.round((e.clientX - rect.left) / 10) * 10;
-    const y = Math.round((e.clientY - rect.top) / 10) * 10;
+    const matrix = svgRef.current.getScreenCTM();
+    const position = matrix ? new DOMPoint(e.clientX, e.clientY).matrixTransform(matrix.inverse()) : { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const x = Math.round(position.x / 10) * 10;
+    const y = Math.round(position.y / 10) * 10;
     return { x, y };
   };
 
   // Keyboard shortcut listener (Rotation with 'R' or Delete with 'Del')
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.closest('input, textarea, select, [contenteditable="true"]') || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === 'Escape') { setWireStart(null); return; }
       if (!selectedComponent) return;
       if (e.key.toLowerCase() === 'r') {
         const nextRot = (selectedComponent.rotation + 90) % 360;

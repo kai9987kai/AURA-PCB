@@ -22,6 +22,44 @@
   -webkit-font-smoothing: antialiased;
 }
 
+* { box-sizing: border-box; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: 0.4; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid #22d3ee; outline-offset: 3px;
+}
+.component-sidebar { flex: 0 0 290px; min-width: 0; }
+.project-bar { flex-shrink: 0; background: linear-gradient(100deg, #101b20, #0c1119 65%); border-bottom: 1px solid #24323b; }
+.project-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 14px 22px; }
+.project-identity { display: flex; flex-direction: column; gap: 4px; min-width: 170px; }
+.project-eyebrow { font: 9px 'JetBrains Mono', monospace; letter-spacing: 0.16em; color: #69b7be; }
+.project-identity input { background: transparent; color: #e7f0f5; border: none; padding: 0; font-size: 15px; font-weight: 600; width: 195px; }
+.save-indicator { color: #94a8b2; font-size: 11px; max-width: 280px; }
+.project-buttons { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.project-buttons button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #2b3b46; background: #15212a; border-radius: 6px; padding: 7px 9px; color: #d6e3eb; font: 11px 'Inter', sans-serif; }
+.project-buttons button:hover:not(:disabled) { background: #243a47; border-color: #4a7b8b; }
+.toolbar-divider { width: 1px; height: 22px; background: #31434b; margin: 0 4px; }
+.project-notice { padding: 7px 22px; background: #11242d; color: #a8d5e3; font-size: 11px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.project-notice button { border: none; background: transparent; color: inherit; font-size: 16px; }
+.view-navigation { flex-shrink: 0; overflow-x: auto; }
+.view-navigation nav { min-width: max-content; }
+.view-navigation nav button { white-space: nowrap; padding: 9px 12px; }
+@media (max-width: 1050px) {
+  .component-sidebar { flex-basis: 240px; }
+  .project-actions { gap: 10px; padding: 12px; }
+  .project-buttons { margin-left: 0; }
+  .view-navigation { padding: 8px 10px; }
+}
+@media (max-width: 650px) {
+  .app-shell { flex-direction: column; }
+  .component-sidebar { flex: 0 0 200px; width: 100%; border-right: 0; border-bottom: 1px solid #27272a; }
+  .project-identity input { width: 160px; }
+  .project-notice { padding: 6px 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
 body {
   margin: 0;
   padding: 0;

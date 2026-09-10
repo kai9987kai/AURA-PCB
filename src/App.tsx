@@ -1,12 +1,16 @@
-import { useState, useMemo } from 'react';
-import type { SchematicData, PCBLayoutData, SimResult, SchematicComponent, Wire, ComponentType, Pin, Pad, PCBFootprint } from './types/pcb';
+import { useState, useMemo, lazy, Suspense } from 'react';
+import type { SimResult, SchematicComponent, Wire, ComponentType, Pin, Pad, PCBFootprint } from './types/pcb';
 import { Sidebar } from './components/Sidebar';
 import { SchematicEditor } from './components/SchematicEditor';
 import { LayoutEditor } from './components/LayoutEditor';
 import { SimulationPanel } from './components/SimulationPanel';
 import { ThermalPanel } from './components/ThermalPanel';
 import { SignalIntegrityPanel } from './components/SignalIntegrityPanel';
-import { ThreeDPCBViewer } from './components/ThreeDPCBViewer';
+const ThreeDPCBViewer = lazy(() => import('./components/ThreeDPCBViewer').then(module => ({ default: module.ThreeDPCBViewer })));
+import { useProject } from './project/useProject';
+import { ProjectToolbar } from './components/ProjectToolbar';
+import { electricalSignature, nextComponentId } from './project/connectivity';
+import { analyzeBoard } from './analysis/boardChecks';
 import { ResearchPanel } from './components/ResearchPanel';
 import { Activity, Edit3, Compass, Cpu, Thermometer, Zap } from 'lucide-react';
 
@@ -147,119 +151,21 @@ const getFootprintDimensions = (type: ComponentType) => {
   }
 };
 
-const applyConnectivityNets = (
-  schematicData: SchematicData,
-  layoutData: PCBLayoutData
-): { schematic: SchematicData; pcbLayout: PCBLayoutData } => {
-  const pinToParent: Record<string, string> = {};
-  const allPins: string[] = [];
-
-  schematicData.components.forEach(comp => {
-    comp.pins.forEach(pin => {
-      const pinKey = `${comp.id}:${pin.id}`;
-      pinToParent[pinKey] = pinKey;
-      allPins.push(pinKey);
-    });
-  });
-
-  const find = (pinKey: string): string => {
-    if (!pinToParent[pinKey]) return pinKey;
-    if (pinToParent[pinKey] === pinKey) return pinKey;
-    pinToParent[pinKey] = find(pinToParent[pinKey]);
-    return pinToParent[pinKey];
-  };
-
-  const union = (pinKey1: string, pinKey2: string) => {
-    const root1 = find(pinKey1);
-    const root2 = find(pinKey2);
-    if (root1 !== root2) {
-      pinToParent[root1] = root2;
-    }
-  };
-
-  schematicData.wires.forEach(wire => {
-    union(`${wire.fromCompId}:${wire.fromPinId}`, `${wire.toCompId}:${wire.toPinId}`);
-  });
-
-  const netGroups: Record<string, string[]> = {};
-  allPins.forEach(pinKey => {
-    const root = find(pinKey);
-    if (!netGroups[root]) netGroups[root] = [];
-    netGroups[root].push(pinKey);
-  });
-
-  let groundRoot: string | null = null;
-  schematicData.components.forEach(comp => {
-    if (comp.type === 'gnd') {
-      groundRoot = find(`${comp.id}:gnd`);
-    }
-  });
-
-  const pinToNetName: Record<string, string> = {};
-  let netIdx = 1;
-  Object.keys(netGroups).forEach(root => {
-    const isGnd = root === groundRoot || netGroups[root].some(pinKey => pinKey.endsWith(':gnd'));
-    const netName = isGnd ? 'GND' : `NET_${netIdx++}`;
-    netGroups[root].forEach(pinKey => {
-      pinToNetName[pinKey] = netName;
-    });
-  });
-
-  return {
-    schematic: {
-      ...schematicData,
-      components: schematicData.components.map(comp => ({
-        ...comp,
-        pins: comp.pins.map(pin => ({
-          ...pin,
-          net: pinToNetName[`${comp.id}:${pin.id}`]
-        }))
-      })),
-      wires: schematicData.wires.map(wire => ({
-        ...wire,
-        net: pinToNetName[`${wire.fromCompId}:${wire.fromPinId}`] || 'GND'
-      }))
-    },
-    pcbLayout: {
-      ...layoutData,
-      footprints: layoutData.footprints.map(fp => ({
-        ...fp,
-        pads: fp.pads.map(pad => ({
-          ...pad,
-          net: pinToNetName[`${fp.id}:${pad.id}`]
-        }))
-      }))
-    }
-  };
-};
-
 function App() {
   const [activeView, setActiveView] = useState<'schematic' | 'layout2d' | 'layout3d' | 'simulation' | 'thermal' | 'si' | 'research'>('schematic');
   
-  // Schematic State
-  const [schematic, setSchematic] = useState<SchematicData>({
-    components: [],
-    wires: []
-  });
-
-  // PCB Layout State
-  const [pcbLayout, setPcbLayout] = useState<PCBLayoutData>({
-    boardWidth: 80.0, // mm
-    boardHeight: 55.0, // mm
-    footprints: [],
-    traces: [],
-    vias: []
-  });
-
+  const { project, commit, undo, redo, canUndo, canRedo, saveStatus, notice } = useProject();
+  const { schematic, pcbLayout } = project;
+  const schematicWithNets = schematic;
+  const pcbLayoutWithNets = pcbLayout;
   const [selectedCompId, setSelectedCompId] = useState<string | null>(null);
-  const [simResult, setSimResult] = useState<SimResult | null>(null);
-  const [drcErrors, setDrcErrors] = useState<string[]>([]);
+  const [simulation, setSimulation] = useState<{ signature: string; result: SimResult } | null>(null);
+  const signature = useMemo(() => electricalSignature(schematic), [schematic]);
+  const simResult = simulation?.signature === signature ? simulation.result : null;
+  const setSimResult = (result: SimResult | null) => setSimulation(result ? { signature, result } : null);
   const [placedOffset, setPlacedOffset] = useState(0);
-
-  const { schematic: schematicWithNets, pcbLayout: pcbLayoutWithNets } = useMemo(
-    () => applyConnectivityNets(schematic, pcbLayout),
-    [schematic, pcbLayout]
-  );
+  const boardAnalysis = useMemo(() => analyzeBoard(pcbLayout), [pcbLayout]);
+  const drcErrors = useMemo(() => boardAnalysis.issues.map(issue => issue.message), [boardAnalysis]);
 
   // Parse selected component from components list
   const selectedComponent = schematicWithNets.components.find(c => c.id === selectedCompId) || null;
@@ -318,8 +224,7 @@ function App() {
         { id: 'G3', componentId: 'G3', type: 'gnd', x: 68.0, y: 45.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true }
       ];
 
-      setSchematic({ components: comps, wires });
-      setPcbLayout({ boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [] });
+      commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [] } }, 'replace');
 
     } else if (presetName === 'ledFlasher') {
       // BJT LED Astable Multivibrator or simple Transistor Switch Flasher
@@ -359,8 +264,7 @@ function App() {
         { id: 'G2', componentId: 'G2', type: 'gnd', x: 68.0, y: 40.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true }
       ];
 
-      setSchematic({ components: comps, wires });
-      setPcbLayout({ boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [] });
+      commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [] } }, 'replace');
 
     } else if (presetName === 'bandpassFilter') {
       // Opamp Active Bandpass Filter
@@ -388,8 +292,7 @@ function App() {
         { id: 'G1', componentId: 'G1', type: 'gnd', x: 68.0, y: 45.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true }
       ];
 
-      setSchematic({ components: comps, wires });
-      setPcbLayout({ boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [] });
+      commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [] } }, 'replace');
 
     } else if (presetName === 'rlcResonant') {
       // Passive RLC Resonant circuit
@@ -423,15 +326,14 @@ function App() {
         { id: 'G2', componentId: 'G2', type: 'gnd', x: 60.0, y: 45.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true }
       ];
 
-      setSchematic({ components: comps, wires });
-      setPcbLayout({ boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [] });
+      commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [] } }, 'replace');
     }
   };
 
   // Add a component to the schematic
   const handleAddComponent = (type: ComponentType) => {
     // Unique ID based on type count
-    const count = schematic.components.filter(c => c.type === type).length + 1;
+    if (schematic.components.length >= 128) return;
     let label = '';
     switch (type) {
       case 'resistor': label = 'R'; break;
@@ -445,7 +347,7 @@ function App() {
       case 'opamp': label = 'U'; break;
       case 'timer555': label = 'IC'; break;
     }
-    const id = `${label}${count}`;
+    const id = nextComponentId(label, schematic);
 
     let val = '10k';
     if (type === 'capacitor') val = '100n';
@@ -495,93 +397,38 @@ function App() {
       isPlaced: true
     };
 
-    setSchematic(prev => ({
-      ...prev,
-      components: [...prev.components, newComp]
-    }));
-
-    setPcbLayout(prev => ({
-      ...prev,
-      footprints: [...prev.footprints, newFootprint]
-    }));
+    commit({ ...project, schematic: { ...schematic, components: [...schematic.components, newComp] }, pcbLayout: { ...pcbLayout, footprints: [...pcbLayout.footprints, newFootprint] } });
 
     setSelectedCompId(id);
   };
 
   const handleUpdateComponent = (updated: SchematicComponent) => {
-    // Parse numeric values if changed
-    if (updated.type === 'resistor') {
-      const match = updated.value.trim().match(/^([0-9.-]+)\s*([a-zA-Z]*)$/);
-      if (match) {
-        let num = parseFloat(match[1]);
-        const unit = match[2].toLowerCase();
-        if (unit === 'k') num *= 1000;
-        updated.params.resistance = num;
-      }
+    // Preserve immutable snapshots. The solver parses edited value strings itself.
+    const next = { ...updated, params: { ...updated.params } };
+    if (next.value !== schematic.components.find(c => c.id === next.id)?.value) {
+      delete next.params.resistance;
+      delete next.params.capacitance;
+      delete next.params.inductance;
+      delete next.params.voltage;
     }
-
-    setSchematic(prev => ({
-      ...prev,
-      components: prev.components.map(c => (c.id === updated.id ? updated : c))
-    }));
-
-    // Update footprint rotation in layout
-    setPcbLayout(prev => ({
-      ...prev,
-      footprints: prev.footprints.map(fp => {
-        if (fp.id === updated.id) {
-          return {
-            ...fp,
-            rotation: updated.rotation
-          };
-        }
-        return fp;
-      })
-    }));
+    commit({ ...project, schematic: { ...schematic, components: schematic.components.map(c => c.id === next.id ? next : c) } }, 'component-' + next.id);
   };
 
   const handleDeleteComponent = (id: string) => {
-    const footprint = pcbLayoutWithNets.footprints.find(f => f.id === id);
-    const netsToDelete = new Set(footprint?.pads.map(p => p.net).filter(Boolean) || []);
-
-    setSchematic(prev => ({
-      components: prev.components.filter(c => c.id !== id),
-      wires: prev.wires.filter(w => w.fromCompId !== id && w.toCompId !== id)
-    }));
-
-    setPcbLayout(prev => ({
-      ...prev,
-      footprints: prev.footprints.filter(fp => fp.id !== id),
-      // remove traces connected to this footprint's nets
-      traces: prev.traces.filter(t => !netsToDelete.has(t.net))
-    }));
-
+    commit({ ...project,
+      schematic: { components: schematic.components.filter(c => c.id !== id), wires: schematic.wires.filter(w => w.fromCompId !== id && w.toCompId !== id) },
+      pcbLayout: { ...pcbLayout, footprints: pcbLayout.footprints.filter(f => f.componentId !== id) }
+    });
     setSelectedCompId(null);
   };
 
   const handleAddWire = (wire: Wire) => {
-    setSchematic(prev => ({
-      ...prev,
-      wires: [...prev.wires, wire]
-    }));
+    if (schematic.wires.length >= 512 || schematic.wires.some(w => w.id === wire.id)) return;
+    commit({ ...project, schematic: { ...schematic, wires: [...schematic.wires, wire] } });
   };
 
   const handleDeleteWire = (id: string) => {
-    // Find net name associated with the wire to delete trace
-    const wire = schematicWithNets.wires.find(w => w.id === id);
-    const netToDelete = wire?.net;
-
-    setSchematic(prev => ({
-      ...prev,
-      wires: prev.wires.filter(w => w.id !== id)
-    }));
-
-    if (netToDelete) {
-      setPcbLayout(prev => ({
-        ...prev,
-        traces: prev.traces.filter(t => t.net !== netToDelete)
-      }));
-    }
+    commit({ ...project, schematic: { ...schematic, wires: schematic.wires.filter(w => w.id !== id) } });
     setSelectedCompId(null);
   };
 
@@ -611,7 +458,7 @@ function App() {
   }, [simResult, schematicWithNets.components]);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-zinc-950 text-zinc-100 font-sans">
+    <div className="app-shell flex h-screen w-screen overflow-hidden bg-zinc-950 text-zinc-100 font-sans">
       {/* Sidebar Panel */}
       <Sidebar
         selectedComponent={selectedComponent}
@@ -624,9 +471,10 @@ function App() {
 
       {/* Main View Area */}
       <div className="flex-1 flex flex-col min-w-0">
+        <ProjectToolbar project={project} onChange={commit} undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} saveStatus={saveStatus} notice={notice} />
         {/* Navigation Tab Header */}
-        <div className="flex items-center justify-between px-6 py-3 border-b border-zinc-800 bg-zinc-900/20 backdrop-blur-md">
-          <div className="flex items-center gap-1">
+        <div className="view-navigation flex items-center justify-between px-6 py-3 border-b border-zinc-800 bg-zinc-900/20 backdrop-blur-md">
+          <nav aria-label="Design views" className="flex items-center gap-1">
             <button
               onClick={() => setActiveView('schematic')}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-mono font-medium transition-all ${
@@ -705,13 +553,7 @@ function App() {
               <Activity className="w-3.5 h-3.5 text-emerald-400" />
               Research Lab
             </button>
-          </div>
-          
-          <div className="flex items-center gap-2 text-xs font-mono text-zinc-500">
-            <span>Grid: <span className="text-zinc-400">0.5 mm</span></span>
-            <span>•</span>
-            <span>Design: <span className="text-cyan-400">Prototype_1</span></span>
-          </div>
+          </nav>
         </div>
 
         {/* Dynamic Display Panel */}
@@ -734,17 +576,16 @@ function App() {
               layoutData={pcbLayoutWithNets}
               selectedCompId={selectedCompId}
               onSelectComponent={setSelectedCompId}
-              onUpdateLayout={setPcbLayout}
+              onUpdateLayout={layout => commit({ ...project, pcbLayout: layout }, 'layout')}
               drcErrors={drcErrors}
-              setDrcErrors={setDrcErrors}
             />
           )}
 
           {activeView === 'layout3d' && (
-            <ThreeDPCBViewer
+            <Suspense fallback={<div className="p-6 text-zinc-400">Loading 3D viewer…</div>}><ThreeDPCBViewer
               layoutData={pcbLayoutWithNets}
               simResult={simResult}
-            />
+            /></Suspense>
           )}
 
           {activeView === 'simulation' && (

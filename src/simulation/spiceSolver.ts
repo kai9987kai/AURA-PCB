@@ -1,25 +1,21 @@
 import type { SchematicData, SimResult, SimSettings } from '../types/pcb';
 
-// Helper for parsing component values, e.g., "10k" -> 10000, "100n" -> 1e-7
-export function parseValue(valStr: string): number {
-  if (!valStr) return 0;
-  const match = valStr.trim().match(/^([0-9.-]+)\s*([a-zA-Zμ]*)$/);
-  if (!match) return parseFloat(valStr) || 0;
-  const num = parseFloat(match[1]);
-  const unit = match[2].toLowerCase();
-  
-  switch (unit) {
-    case 'p': return num * 1e-12;
-    case 'n': return num * 1e-9;
-    case 'u':
-    case 'μ': return num * 1e-6;
-    case 'm': return num * 1e-3;
-    case 'k': return num * 1e3;
-    case 'meg':
-    case 'mavg': return num * 1e6;
-    case 'g': return num * 1e9;
-    default: return num;
-  }
+// SPICE notation: M is milli; use MEG for mega. Invalid values return NaN.
+export function parseValue(value: string): number {
+  const match = value.trim().match(/^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*(meg|[pnuμµmkg])?\s*(?:ohms?|Ω|[vafh]|hz)?$/i);
+  if (!match) return NaN;
+  const scale: Record<string, number> = { p: 1e-12, n: 1e-9, u: 1e-6, μ: 1e-6, µ: 1e-6, m: 1e-3, k: 1e3, meg: 1e6, g: 1e9 };
+  return Number(match[1]) * (scale[(match[2] || '').toLowerCase()] ?? 1);
+}
+
+export const SIMULATION_LIMITS = { maxSteps: 10000, maxUnknowns: 96, maxWork: 250_000_000 };
+
+function junction(voltage: number, led = false) {
+  const saturation = led ? 1e-18 : 1e-14;
+  const vt = led ? 0.052 : 0.026;
+  if (voltage / vt > 60) throw new Error('Junction exceeds the simplified model range. Add current limiting or use a device SPICE model.');
+  const exponential = Math.exp(voltage / vt);
+  return { current: saturation * (exponential - 1) + 1e-12 * voltage, conductance: saturation / vt * exponential + 1e-12 };
 }
 
 // Simple Gaussian elimination with partial pivoting to solve A * x = B
@@ -28,6 +24,12 @@ function solveMatrix(A: number[][], B: number[]): number[] {
   const ACopy = A.map(row => [...row]);
   const BCopy = [...B];
 
+  for (let row = 0; row < n; row++) {
+    const scale = Math.max(...ACopy[row].map(Math.abs));
+    if (!Number.isFinite(scale) || scale === 0 || !Number.isFinite(BCopy[row])) throw new Error('Singular or non-finite circuit. Check floating pins and conflicting ideal voltage sources.');
+    ACopy[row] = ACopy[row].map(value => value / scale);
+    BCopy[row] /= scale;
+  }
   for (let i = 0; i < n; i++) {
     // Search for maximum in this column
     let maxEl = Math.abs(ACopy[i][i]);
@@ -48,10 +50,7 @@ function solveMatrix(A: number[][], B: number[]): number[] {
     BCopy[maxRow] = BCopy[i];
     BCopy[i] = tmpB;
 
-    if (Math.abs(ACopy[i][i]) < 1e-20) {
-      // Singular matrix, add small offset to diagonal for stability
-      ACopy[i][i] = 1e-20;
-    }
+    if (Math.abs(ACopy[i][i]) < 1e-14) throw new Error('Singular or ill-conditioned circuit. Connect floating nodes and remove conflicting ideal sources.');
 
     // Upper triangularize
     for (let k = i + 1; k < n; k++) {
@@ -76,6 +75,13 @@ function solveMatrix(A: number[][], B: number[]): number[] {
     }
     x[i] = sum / ACopy[i][i];
   }
+  if (x.some(value => !Number.isFinite(value))) throw new Error('Circuit solution is non-finite.');
+  for (let row = 0; row < n; row++) {
+    const terms = A[row].map((coefficient, col) => coefficient * x[col]);
+    const residual = Math.abs(terms.reduce((sum, value) => sum + value, 0) - B[row]);
+    const scale = Math.abs(B[row]) + terms.reduce((sum, value) => sum + Math.abs(value), 0);
+    if (!Number.isFinite(residual) || residual > 1e-9 + 1e-8 * scale) throw new Error('Circuit solution failed its residual check.');
+  }
   return x;
 }
 
@@ -84,9 +90,33 @@ export function runSpiceSimulation(
   settings: SimSettings
 ): SimResult {
   const { components, wires } = schematic;
+  const { stopTime, stepTime } = settings;
+  if (settings.type !== 'transient') throw new Error('Only transient analysis is supported.');
+  if (!Number.isFinite(stopTime) || !Number.isFinite(stepTime) || stopTime <= 0 || stepTime <= 0 || stepTime > stopTime) throw new Error('Stop and step times must be finite and positive, with step time no greater than stop time.');
+  const maxSteps = Math.ceil(stopTime / stepTime);
+  if (maxSteps > SIMULATION_LIMITS.maxSteps) throw new Error(`Use at most ${SIMULATION_LIMITS.maxSteps.toLocaleString()} time steps. Increase step time or reduce stop time.`);
+  if (!components.length || !components.some(c => c.type === 'gnd')) throw new Error('Add components and a ground reference before simulation.');
+  if (components.length > 256 || wires.length > 2048) throw new Error('Circuit exceeds the interactive solver size limit.');
+  const requiredPins: Record<string, string[]> = {
+    resistor: ['1', '2'], capacitor: ['1', '2'], inductor: ['1', '2'],
+    voltage_source: ['p', 'n'], gnd: ['gnd'], diode: ['a', 'c'], led: ['a', 'c'],
+    transistor_npn: ['b', 'c', 'e'], opamp: ['in+', 'in-', 'out', 'v+', 'v-'],
+    timer555: ['1', '2', '3', '4', '5', '6', '7', '8'],
+  };
+  const seenIds = new Set<string>();
+  components.forEach(comp => {
+    if (seenIds.has(comp.id)) throw new Error(`Duplicate component ID: ${comp.id}.`);
+    seenIds.add(comp.id);
+    if (!requiredPins[comp.type] || requiredPins[comp.type].some(pin => !comp.pins.some(p => p.id === pin))) throw new Error(`${comp.id} has unsupported or missing pins.`);
+    if (new Set(comp.pins.map(pin => pin.id)).size !== comp.pins.length) throw new Error(`${comp.id} has duplicate pins.`);
+    if (['resistor', 'capacitor', 'inductor'].includes(comp.type)) {
+      const value = parseValue(comp.value);
+      if (!Number.isFinite(value) || value <= 0) throw new Error(`${comp.id} needs a finite, positive ${comp.type} value.`);
+    }
+  });
 
   // 1. Build Netlist via Union-Find
-  const pinToParent: Record<string, string> = {};
+  const pinToParent: Record<string, string> = Object.create(null);
   const allPins: string[] = [];
 
   components.forEach(comp => {
@@ -98,10 +128,14 @@ export function runSpiceSimulation(
   });
 
   function find(pinKey: string): string {
-    if (!pinToParent[pinKey]) return pinKey;
-    if (pinToParent[pinKey] === pinKey) return pinKey;
-    pinToParent[pinKey] = find(pinToParent[pinKey]);
-    return pinToParent[pinKey];
+    let root = pinKey;
+    while (pinToParent[root] !== root) root = pinToParent[root];
+    while (pinKey !== root) {
+      const next = pinToParent[pinKey];
+      pinToParent[pinKey] = root;
+      pinKey = next;
+    }
+    return root;
   }
 
   function union(pinKey1: string, pinKey2: string) {
@@ -116,6 +150,7 @@ export function runSpiceSimulation(
   wires.forEach(wire => {
     const fromKey = `${wire.fromCompId}:${wire.fromPinId}`;
     const toKey = `${wire.toCompId}:${wire.toPinId}`;
+    if (!(fromKey in pinToParent) || !(toKey in pinToParent)) throw new Error(`Wire ${wire.id} references a missing pin.`);
     union(fromKey, toKey);
   });
 
@@ -233,7 +268,6 @@ export function runSpiceSimulation(
     nodeDisch: number;
     nodeVcc: number;
     outBranchIdx: number;
-    dischBranchIdx: number;
     state: { flipflop: boolean }; // state across time steps
   }[] = [];
 
@@ -247,23 +281,15 @@ export function runSpiceSimulation(
       let freq = 0;
       let amp = 0;
       let dcVal = parseValue(comp.value);
-      
-      // Parse parameters if sin or pulse
-      if (comp.value.toLowerCase().includes('sin')) {
-        vType = 'sin';
-        const match = comp.value.match(/sin\(([^)]+)\)/i);
-        if (match) {
-          const parts = match[1].split(',').map(p => parseValue(p.trim()));
-          dcVal = parts[0] || 0; // offset
-          amp = parts[1] || 1;  // amplitude
-          freq = parts[2] || 1000; // frequency
-        }
-      } else if (comp.value.toLowerCase().includes('pulse')) {
-        vType = 'pulse';
-        // Simple pulse parsing or defaults
-        amp = 5;
-        freq = 1000;
-      }
+      const waveform = comp.value.trim().match(/^(sin|pulse)\(([^)]+)\)$/i);
+      if (waveform) {
+        const parts = waveform[2].split(/[\s,]+/).filter(Boolean).map(parseValue);
+        if (parts.length !== 3 || parts.some(v => !Number.isFinite(v)) || parts[2] <= 0) throw new Error(`${comp.id}: use sin(offset, amplitude, frequency) or pulse(low, high, frequency).`);
+        vType = waveform[1].toLowerCase() as 'sin' | 'pulse';
+        dcVal = parts[0];
+        amp = vType === 'pulse' ? parts[1] - parts[0] : parts[1];
+        freq = parts[2];
+      } else if (!Number.isFinite(dcVal)) throw new Error(`${comp.id} has an invalid voltage or waveform.`);
 
       voltageSources.push({
         compId: comp.id,
@@ -302,7 +328,6 @@ export function runSpiceSimulation(
       const nodeVcc = compPinNode(comp.id, '8');
       
       const outBranchIdx = nodeCount + (++voltBranchCount);
-      const dischBranchIdx = nodeCount + (++voltBranchCount);
 
       timers.push({
         compId: comp.id,
@@ -315,7 +340,6 @@ export function runSpiceSimulation(
         nodeDisch,
         nodeVcc,
         outBranchIdx,
-        dischBranchIdx,
         state: { flipflop: false } // Initial state: reset
       });
     }
@@ -324,8 +348,9 @@ export function runSpiceSimulation(
   const totalMatrixSize = nodeCount + voltBranchCount + 1; // 1-indexed for nodes + voltage branches + ground row (ground is index 0)
   
   // Simulation loop variables
-  const stopTime = settings.stopTime || 0.02;
-  const stepTime = settings.stepTime || 5e-5;
+  const nonlinear = components.some(c => ['diode', 'led', 'transistor_npn', 'opamp', 'timer555'].includes(c.type));
+  const maxNrIterations = nonlinear ? 100 : 1;
+  if (totalMatrixSize > SIMULATION_LIMITS.maxUnknowns || totalMatrixSize ** 3 * maxSteps * maxNrIterations > SIMULATION_LIMITS.maxWork) throw new Error('Circuit and time resolution exceed the interactive computation budget. Simplify the circuit or increase step time.');
   const timepoints: number[] = [];
   const nodes = Object.keys(netNameToIndex).sort((a, b) => netNameToIndex[a] - netNameToIndex[b]);
 
@@ -357,6 +382,7 @@ export function runSpiceSimulation(
 
   // Iteration variables
   let t = 0;
+  let previousX = new Array<number>(totalMatrixSize).fill(0);
   
   // Power accumulator
   const instPower: Record<string, number[]> = {};
@@ -395,18 +421,19 @@ export function runSpiceSimulation(
   };
 
   // Run transient simulation loop
-  const maxSteps = Math.ceil(stopTime / stepTime);
-  for (let step = 0; step <= maxSteps; step++) {
-    t = step * stepTime;
+  // Zero initial stored energy. First sample is at h, not mislabeled as t=0.
+  for (let step = 1; step <= maxSteps; step++) {
+    t = Math.min(step * stepTime, stopTime);
+    const dt = t - (timepoints.at(-1) ?? 0);
+    if (dt <= 0) break;
     timepoints.push(t);
 
     let xVector: number[] = new Array(totalMatrixSize).fill(0);
     let converged = false;
     let nrIteration = 0;
-    const maxNrIterations = 40;
 
     // Last iteration values for convergence check
-    let lastX: number[] = new Array(totalMatrixSize).fill(0);
+    let lastX = [...previousX];
 
     // Dynamic 555 state updates at the start of time step based on voltages at previous step
     timers.forEach(tmr => {
@@ -424,14 +451,14 @@ export function runSpiceSimulation(
       const vThr = getPrevVolt(tmr.nodeThr);
       const vReset = getPrevVolt(tmr.nodeReset);
       
-      const vcc = vVcc > 0.5 ? vVcc : 5.0; // default VCC if unpowered
+      const vcc = vVcc;
       
       // Control voltage (pin 5) defaults to 2/3 VCC if not connected
       const vCtrl = tmr.nodeCtrl > 0 ? getPrevVolt(tmr.nodeCtrl) : (2.0 / 3.0) * vcc;
       const trigThreshold = vCtrl / 2.0;
 
       // 555 Logic
-      if (vReset < 0.8 && tmr.nodeReset > 0) {
+      if (vcc < 0.8 || vReset < 0.8) {
         tmr.state.flipflop = false; // Reset active
       } else {
         if (vTrig < trigThreshold) {
@@ -463,44 +490,27 @@ export function runSpiceSimulation(
           // Backward Euler companion model:
           // G_eq = C / h
           // I_eq = - (C / h) * V_c(t_n-1)
-          const c = val || 1e-6;
-          const geq = c / stepTime;
+          const c = val;
+          const geq = c / dt;
           const state = capStates[comp.id];
           const ieq = geq * state.vc;
           stampResistor(A, node1, node2, 1 / geq);
-          stampCurrentSource(B, node1, node2, ieq);
+          stampCurrentSource(B, node1, node2, -ieq);
         } else if (comp.type === 'inductor') {
           // Backward Euler companion model:
           // G_eq = h / L
           // I_eq = I_l(t_n-1)
-          const l = val || 1e-3;
-          const geq = stepTime / l;
+          const l = val;
+          const geq = dt / l;
           const state = indStates[comp.id];
           const ieq = state.il;
           stampResistor(A, node1, node2, 1 / geq);
           stampCurrentSource(B, node1, node2, ieq);
         } else if (comp.type === 'diode' || comp.type === 'led') {
-          // Newton-Raphson stamp for Diode:
-          // I_d = I_s * (exp(V_d/V_t) - 1)
-          // At iteration k: V_d^k = V(node1) - V(node2) from last iteration
-          const Is = comp.type === 'led' ? 1e-18 : 1e-14;
-          const Vt = 0.026 * (comp.type === 'led' ? 2.0 : 1.0); // larger Vt for LED to match forward drop
-          
-          const v1Last = lastX[node1];
-          const v2Last = lastX[node2];
-          let vdLast = v1Last - v2Last;
-
-          // Limit diode voltage steps to prevent exponential overflow
-          if (vdLast > 0.8) vdLast = 0.8;
-          if (vdLast < -2.0) vdLast = -2.0;
-
-          const expVal = Math.exp(vdLast / Vt);
-          const gd = (Is / Vt) * expVal;
-          const id = Is * (expVal - 1);
-          const ieq = id - gd * vdLast;
-
-          stampResistor(A, node1, node2, 1 / (gd + 1e-12)); // Add minor conductance for convergence
-          stampCurrentSource(B, node1, node2, -ieq); // current source in parallel
+          const vd = lastX[node1] - lastX[node2];
+          const model = junction(vd, comp.type === 'led');
+          stampResistor(A, node1, node2, 1 / model.conductance);
+          stampCurrentSource(B, node1, node2, model.current - model.conductance * vd);
         } else if (comp.type === 'transistor_npn') {
           // NPN BJT Simplified Ebers-Moll / Gummel-Poon
           // Pins: Collector (c), Base (b), Emitter (e)
@@ -508,36 +518,13 @@ export function runSpiceSimulation(
           const nb = compPinNode(comp.id, 'b');
           const ne = compPinNode(comp.id, 'e');
 
-          const Is = 1e-14;
-          const Vt = 0.026;
           const beta = 100;
-
-          // Vbe
           const vbe = lastX[nb] - lastX[ne];
-
-          // Clamp
-          const vbeClamped = Math.min(0.8, Math.max(-5.0, vbe));
-
-          const expBe = Math.exp(vbeClamped / Vt);
-
-          // Diode currents
-          const ibe = Is * (expBe - 1);
-
-          // Linearized conductances
-          const gbe = (Is / Vt) * expBe;
-
-          // Current generators
-          // Ib = ibe/beta_f + ibc/beta_r
-          // Ic = ibe - ibc - ibc/beta_r
-          // Stamp linearized components:
-          // We represent base-emitter as diode (gbe, ibe - gbe*vbe)
-          // base-collector as diode (gbc, ibc - gbc*vbc)
-          // And dependent current source: I_c_dependent = beta * I_base_emitter
-          // To keep it simple and highly stable for simulation:
-          // Base-emitter: stamp gbe between base and emitter. Companion current source: I_be_eq = ibe - gbe * vbe
-          const ibeEq = ibe - gbe * vbeClamped;
-          stampResistor(A, nb, ne, 1 / (gbe + 1e-12));
-          stampCurrentSource(B, nb, ne, -ibeEq);
+          const model = junction(vbe);
+          const gbe = model.conductance;
+          const ibeEq = model.current - gbe * vbe;
+          stampResistor(A, nb, ne, 1 / gbe);
+          stampCurrentSource(B, nb, ne, ibeEq);
 
           // Collector-Emitter active current source: Ic = beta * Ib = beta * (Vbe * gbe + ibeEq)
           // We stamp a transconductance: gm = beta * gbe
@@ -552,7 +539,7 @@ export function runSpiceSimulation(
             A[ne][ne] += gm;
           }
           // And add companion current source: beta * ibeEq from C to E
-          stampCurrentSource(B, nc, ne, -beta * ibeEq);
+          stampCurrentSource(B, nc, ne, beta * ibeEq);
 
           // Minor leakage resistance to collector-base
           stampResistor(A, nc, nb, 1e7);
@@ -562,13 +549,13 @@ export function runSpiceSimulation(
       // Stamp independent Voltage Sources
       voltageSources.forEach(src => {
         let vVal = src.vValue;
-        if (src.type === 'sin' && src.freq && src.amplitude) {
-          vVal = src.vValue + src.amplitude * Math.sin(2 * Math.PI * src.freq * t);
-        } else if (src.type === 'pulse' && src.freq && src.amplitude) {
+        if (src.type === 'sin') {
+          vVal = src.vValue + (src.amplitude ?? 0) * Math.sin(2 * Math.PI * (src.freq ?? 0) * t);
+        } else if (src.type === 'pulse') {
           // Square wave: 50% duty cycle
-          const period = 1.0 / src.freq;
+          const period = 1.0 / (src.freq ?? 1);
           const phase = t % period;
-          vVal = phase < period / 2 ? src.vValue + src.amplitude : src.vValue;
+          vVal = phase < period / 2 ? src.vValue + (src.amplitude ?? 0) : src.vValue;
         }
         stampVoltageSource(A, B, src.nodePos, src.nodeNeg, src.branchIdx, vVal);
       });
@@ -579,75 +566,51 @@ export function runSpiceSimulation(
       // Clamped output: If V_out exceeds rails, we model it as a fixed voltage source driven to rail.
       opamps.forEach(op => {
         const gain = 1e5;
-        const vcc = op.nodeVcc > 0 ? lastX[op.nodeVcc] : 15.0;
-        const vee = op.nodeVee > 0 ? lastX[op.nodeVee] : -15.0;
-
-        const vinPlus = lastX[op.nodeInPlus];
-        const vinMinus = lastX[op.nodeInMinus];
-
-        const desiredOut = gain * (vinPlus - vinMinus);
-        
-        if (desiredOut > vcc - 0.5) {
-          // Clamp to VCC
-          stampVoltageSource(A, B, op.nodeOut, 0, op.branchIdx, vcc - 1.0);
-        } else if (desiredOut < vee + 0.5) {
-          // Clamp to VEE
-          stampVoltageSource(A, B, op.nodeOut, 0, op.branchIdx, vee + 1.0);
-        } else {
-          // Linear range equation: V_out - Gain*(V_in+ - V_in-) = 0
-          // Stamp branch equations:
-          // A[branchIdx][nodeOut] = 1
-          // A[branchIdx][nodeIn+] = -Gain
-          // A[branchIdx][nodeIn-] = +Gain
-          // In Out node, current enters from opamp output branch
-          A[op.branchIdx][op.nodeOut] += 1;
-          A[op.nodeOut][op.branchIdx] += 1;
-
+        const vcc = lastX[op.nodeVcc];
+        const vee = lastX[op.nodeVee];
+        const desiredOut = gain * (lastX[op.nodeInPlus] - lastX[op.nodeInMinus]);
+        stampVoltageSource(A, B, op.nodeOut, 0, op.branchIdx, 0);
+        if (desiredOut > Math.max(vcc, vee)) A[op.branchIdx][op.nodeVcc] -= 1;
+        else if (desiredOut < vee) A[op.branchIdx][op.nodeVee] -= 1;
+        else {
           A[op.branchIdx][op.nodeInPlus] -= gain;
           A[op.branchIdx][op.nodeInMinus] += gain;
-
-          B[op.branchIdx] = 0;
         }
       });
 
       // Stamp 555 Timers behaviorally
       timers.forEach(tmr => {
-        const vcc = tmr.nodeVcc > 0 ? lastX[tmr.nodeVcc] : 5.0;
-        
-        // Output Branch: pin 3 driven to VCC (if set) or GND (if reset)
-        const voutTarget = tmr.state.flipflop ? (vcc - 0.7) : 0.1;
-        stampVoltageSource(A, B, tmr.nodeOut, tmr.nodeGnd, tmr.outBranchIdx, voutTarget);
-
-        // Discharge Branch: pin 7 connected to GND via 10 Ohm resistor (if reset), or open-circuit (if set)
+        stampVoltageSource(A, B, tmr.nodeOut, tmr.nodeGnd, tmr.outBranchIdx, 0);
         if (tmr.state.flipflop) {
-          // Open: high resistance to GND
-          stampResistor(A, tmr.nodeDisch, tmr.nodeGnd, 1e7);
-          // Fixed 0V dummy branch for MNA stability
-          stampVoltageSource(A, B, 0, 0, tmr.dischBranchIdx, 0);
-        } else {
-          // Connected: low resistance to GND (10 Ohms)
-          stampResistor(A, tmr.nodeDisch, tmr.nodeGnd, 10);
-          stampVoltageSource(A, B, tmr.nodeDisch, tmr.nodeGnd, tmr.dischBranchIdx, 0.1);
+          A[tmr.outBranchIdx][tmr.nodeVcc] -= 1;
+          A[tmr.outBranchIdx][tmr.nodeGnd] += 1;
         }
+        stampResistor(A, tmr.nodeDisch, tmr.nodeGnd, tmr.state.flipflop ? 1e7 : 10);
+        // Internal resistor divider supplies control pin 5 at nominal 2/3 VCC.
+        stampResistor(A, tmr.nodeVcc, tmr.nodeCtrl, 5000);
+        stampResistor(A, tmr.nodeCtrl, tmr.nodeGnd, 10000);
       });
 
       // Solve matrix A * xVector = B
       xVector = solveMatrix(A, B);
 
-      // Check convergence for NR
-      let maxDiff = 0;
-      for (let i = 0; i < totalMatrixSize; i++) {
-        const diff = Math.abs(xVector[i] - lastX[i]);
-        if (diff > maxDiff) maxDiff = diff;
-      }
-
-      if (maxDiff < 1e-4 || nrIteration > maxNrIterations - 2) {
-        converged = true;
-      }
-
-      lastX = [...xVector];
+      if (!nonlinear) { converged = true; break; }
+      // Limit junction voltage changes, rather than clamp the final device model.
+      let damping = 1;
+      components.forEach(comp => {
+        const pins = comp.type === 'diode' || comp.type === 'led' ? ['a', 'c'] : comp.type === 'transistor_npn' ? ['b', 'e'] : null;
+        if (!pins) return;
+        const p = compPinNode(comp.id, pins[0]);
+        const n = compPinNode(comp.id, pins[1]);
+        const change = Math.abs(xVector[p] - xVector[n] - lastX[p] + lastX[n]);
+        if (change > 0.15) damping = Math.min(damping, 0.15 / change);
+      });
+      converged = damping === 1 && xVector.every((value, i) => Math.abs(value - lastX[i]) <= (i <= nodeCount ? 1e-7 : 1e-10) + 1e-6 * Math.max(Math.abs(value), Math.abs(lastX[i])));
+      lastX = xVector.map((value, i) => lastX[i] + damping * (value - lastX[i]));
       nrIteration++;
     }
+    if (!converged) throw new Error(`Nonlinear solver did not converge at ${t.toExponential(3)} s. Reduce the step time or simplify the circuit.`);
+    previousX = xVector;
 
     // Save node voltages
     nodes.forEach(nodeName => {
@@ -676,16 +639,16 @@ export function runSpiceSimulation(
       if (comp.type === 'resistor') {
         current = vDiff / (val || 1);
       } else if (comp.type === 'capacitor') {
-        const c = val || 1e-6;
-        const geq = c / stepTime;
+        const c = val;
+        const geq = c / dt;
         const state = capStates[comp.id];
         // I_c(t_n) = (C/h) * (V_c(t_n) - V_c(t_n-1))
         current = geq * (vDiff - state.vc);
         state.vc = vDiff;
         state.ic = current;
       } else if (comp.type === 'inductor') {
-        const l = val || 1e-3;
-        const geq = stepTime / l;
+        const l = val;
+        const geq = dt / l;
         const state = indStates[comp.id];
         // I_l(t_n) = I_l(t_n-1) + (h/L) * V_l(t_n)
         current = state.il + geq * vDiff;
@@ -697,19 +660,14 @@ export function runSpiceSimulation(
           current = xVector[src.branchIdx] || 0;
         }
       } else if (comp.type === 'diode' || comp.type === 'led') {
-        const Is = comp.type === 'led' ? 1e-18 : 1e-14;
-        const Vt = 0.026 * (comp.type === 'led' ? 2.0 : 1.0);
-        current = Is * (Math.exp(vDiff / Vt) - 1);
+        current = junction(vDiff, comp.type === 'led').current;
       } else if (comp.type === 'transistor_npn') {
         // Approximate collector current
         const nb = compPinNode(comp.id, 'b');
         const ne = compPinNode(comp.id, 'e');
         const vbe = (xVector[nb] || 0) - (xVector[ne] || 0);
-        const Is = 1e-14;
-        const Vt = 0.026;
-        const beta = 100;
-        const ibe = Is * (Math.exp(Math.min(0.8, vbe) / Vt) - 1);
-        current = beta * ibe; // approximate C-E current
+        const nc = compPinNode(comp.id, 'c');
+        current = 100 * junction(vbe).current + (xVector[nc] - xVector[nb]) / 1e7;
       } else if (comp.type === 'opamp') {
         const op = opamps.find(o => o.compId === comp.id);
         if (op) {
@@ -724,8 +682,19 @@ export function runSpiceSimulation(
 
       currentHistory[comp.id].push(current);
       
-      // Calculate instantaneous power P = V * I
-      instPower[comp.id].push(Math.abs(vDiff * current));
+      // Ideal reactive parts and sources have no modeled heat loss. Behavioral IC
+      // internal losses are unknown; zero here does not certify zero real heating.
+      let power = 0;
+      if (comp.type === 'resistor' || comp.type === 'diode' || comp.type === 'led') power = Math.max(0, vDiff * current);
+      if (comp.type === 'transistor_npn') {
+        const vb = xVector[compPinNode(comp.id, 'b')];
+        const vc = xVector[compPinNode(comp.id, 'c')];
+        const ve = xVector[compPinNode(comp.id, 'e')];
+        const ib = junction(vb - ve).current + (vb - vc) / 1e7;
+        power = Math.max(0, (vc - ve) * current + (vb - ve) * ib);
+      }
+      if (!Number.isFinite(current) || !Number.isFinite(power)) throw new Error(`${comp.id} produced non-finite current or power.`);
+      instPower[comp.id].push(power * dt);
     });
   }
 
@@ -736,7 +705,7 @@ export function runSpiceSimulation(
       powerDissipation[comp.id] = 0;
     } else {
       const powArr = instPower[comp.id];
-      const avg = powArr.reduce((sum, p) => sum + p, 0) / powArr.length;
+      const avg = powArr.reduce((sum, energy) => sum + energy, 0) / stopTime;
       powerDissipation[comp.id] = avg;
     }
   });

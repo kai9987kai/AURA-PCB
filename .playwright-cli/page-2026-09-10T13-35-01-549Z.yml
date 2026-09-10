@@ -1,0 +1,100 @@
+- generic [ref=e3]:
+  - complementary "Component library and design properties" [ref=e4]:
+    - generic [ref=e5]:
+      - heading "AURA PCB" [level=1] [ref=e6]
+      - generic [ref=e10]: v1.3-beta
+    - generic [ref=e11]:
+      - button "Library" [ref=e12] [cursor=pointer]
+      - button "Properties" [ref=e13] [cursor=pointer]
+      - button "Presets" [ref=e14] [cursor=pointer]
+      - button "DRC" [ref=e15] [cursor=pointer]
+    - generic [ref=e17]:
+      - textbox "Search components..." [ref=e22]
+      - generic [ref=e23]:
+        - button "All" [ref=e24] [cursor=pointer]
+        - button "Passives" [ref=e25] [cursor=pointer]
+        - button "Actives" [ref=e26] [cursor=pointer]
+        - button "ICs" [ref=e27] [cursor=pointer]
+        - button "Power/GND" [ref=e28] [cursor=pointer]
+      - generic [ref=e29]:
+        - generic [ref=e30]:
+          - generic [ref=e31]: Component Placement
+          - generic [ref=e32]: 10 found
+        - generic [ref=e33]:
+          - button "RES Resistor Passive resistor (R)" [ref=e34] [cursor=pointer]:
+            - generic [ref=e35]: RES
+            - generic [ref=e36]:
+              - generic [ref=e37]: Resistor
+              - generic [ref=e38]: Passive resistor (R)
+          - button "CAP Capacitor Decoupling/Filter (C)" [ref=e39] [cursor=pointer]:
+            - generic [ref=e40]: CAP
+            - generic [ref=e41]:
+              - generic [ref=e42]: Capacitor
+              - generic [ref=e43]: Decoupling/Filter (C)
+          - button "IND Inductor Energy storage (L)" [ref=e44] [cursor=pointer]:
+            - generic [ref=e45]: IND
+            - generic [ref=e46]:
+              - generic [ref=e47]: Inductor
+              - generic [ref=e48]: Energy storage (L)
+          - button "VOL Voltage Source DC/AC Power" [ref=e49] [cursor=pointer]:
+            - generic [ref=e50]: VOL
+            - generic [ref=e51]:
+              - generic [ref=e52]: Voltage Source
+              - generic [ref=e53]: DC/AC Power
+          - button "GND Ground Reference Node (0V)" [ref=e54] [cursor=pointer]:
+            - generic [ref=e55]: GND
+            - generic [ref=e56]:
+              - generic [ref=e57]: Ground
+              - generic [ref=e58]: Reference Node (0V)
+          - button "DIO Diode Silicon Diode (D)" [ref=e59] [cursor=pointer]:
+            - generic [ref=e60]: DIO
+            - generic [ref=e61]:
+              - generic [ref=e62]: Diode
+              - generic [ref=e63]: Silicon Diode (D)
+          - button "LED LED Light Emitting Diode" [ref=e64] [cursor=pointer]:
+            - generic [ref=e65]: LED
+            - generic [ref=e66]:
+              - generic [ref=e67]: LED
+              - generic [ref=e68]: Light Emitting Diode
+          - button "TRA NPN Transistor BJT Transistor (Q)" [ref=e69] [cursor=pointer]:
+            - generic [ref=e70]: TRA
+            - generic [ref=e71]:
+              - generic [ref=e72]: NPN Transistor
+              - generic [ref=e73]: BJT Transistor (Q)
+          - button "OPA Op-Amp Operational Amplifier (U)" [ref=e74] [cursor=pointer]:
+            - generic [ref=e75]: OPA
+            - generic [ref=e76]:
+              - generic [ref=e77]: Op-Amp
+              - generic [ref=e78]: Operational Amplifier (U)
+          - button "TIM 555 Timer Mixed-Signal Astable (IC)" [ref=e79] [cursor=pointer]:
+            - generic [ref=e80]: TIM
+            - generic [ref=e81]:
+              - generic [ref=e82]: 555 Timer
+              - generic [ref=e83]: Mixed-Signal Astable (IC)
+  - generic [ref=e84]:
+    - generic [ref=e85]:
+      - generic [ref=e86]:
+        - generic [ref=e87]:
+          - generic [ref=e88]: DESIGN WORKSPACE
+          - textbox "Project name" [ref=e89]: Untitled board
+        - status [ref=e90]: Local workspace
+        - generic [ref=e91]:
+          - button "New" [ref=e92] [cursor=pointer]
+          - button "Open" [ref=e94] [cursor=pointer]
+          - button "Save" [ref=e97] [cursor=pointer]
+          - button "BOM" [disabled] [ref=e101]
+          - button "Undo" [disabled] [ref=e104]
+          - button "Redo" [disabled] [ref=e108]
+      - status [ref=e112]: Start with a reference circuit or add a component.
+    - navigation "Design views" [ref=e114]:
+      - button "Schematic Capture" [ref=e115] [cursor=pointer]
+      - button "2D PCB Layout" [ref=e118] [cursor=pointer]
+      - button "3D PCB View" [ref=e122] [cursor=pointer]
+      - button "SPICE Scope" [ref=e126] [cursor=pointer]
+      - button "Thermal Solver" [ref=e129] [cursor=pointer]
+      - button "Signal Integrity" [ref=e132] [cursor=pointer]
+      - button "Research Lab" [ref=e135] [cursor=pointer]
+    - generic [ref=e140]:
+      - generic [ref=e141]: Drag to Move
+      - generic [ref=e142]: Click pins to Wire
+      - generic [ref=e143]: "[R] to Rotate"

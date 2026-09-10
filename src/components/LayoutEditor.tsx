@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import type { PCBLayoutData, PCBFootprint, PCBTrace, Pad, PCBVia } from '../types/pcb';
+import type { PCBLayoutData, PCBTrace, Pad, PCBVia } from '../types/pcb';
 import { Route, CheckCircle, Layers, Ruler, Trash2, CircleDot } from 'lucide-react';
+import { analyzeBoard, BOARD_RULES, getPadBoardCoords, pointSegmentDistance, segmentDistance } from '../analysis/boardChecks';
 
 interface LayoutEditorProps {
   layoutData: PCBLayoutData;
@@ -8,7 +9,6 @@ interface LayoutEditorProps {
   onSelectComponent: (id: string | null) => void;
   onUpdateLayout: (data: PCBLayoutData) => void;
   drcErrors: string[];
-  setDrcErrors: (errors: string[]) => void;
 }
 
 export const LayoutEditor: React.FC<LayoutEditorProps> = ({
@@ -16,8 +16,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
   selectedCompId,
   onSelectComponent,
   onUpdateLayout,
-  drcErrors,
-  setDrcErrors
+  drcErrors
 }) => {
   const [draggedFootprint, setDraggedFootprint] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -27,7 +26,8 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
   const [activeLayer, setActiveLayer] = useState<'top' | 'bottom'>('top');
   const [isRouting, setIsRouting] = useState(false);
   const [traceWidthInput, setTraceWidthInput] = useState('0.40');
-  const [showGroundPour, setShowGroundPour] = useState(true);
+  const [showGroundPour, setShowGroundPour] = useState(false);
+  const [routeNotice, setRouteNotice] = useState('');
   const [showMeasurements, setShowMeasurements] = useState(true);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -41,30 +41,14 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
   const getMMCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current) return { x: 0, y: 0 };
     const rect = canvasRef.current.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / SCALE;
-    const y = (e.clientY - rect.top) / SCALE;
+    const x = (e.clientX - rect.left) * layoutData.boardWidth / rect.width;
+    const y = (e.clientY - rect.top) * layoutData.boardHeight / rect.height;
     // Snap to 0.5mm grid
     return {
       x: Math.round(x * 2) / 2,
       y: Math.round(y * 2) / 2
     };
   };
-
-  // Get absolute coordinates of a pad on the board in mm
-  const getPadBoardCoords = useCallback((fp: PCBFootprint, pad: Pad) => {
-    const rad = (fp.rotation * Math.PI) / 180;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-
-    // Rotate local pad coordinates relative to footprint center
-    const rx = pad.relX * cos - pad.relY * sin;
-    const ry = pad.relX * sin + pad.relY * cos;
-
-    return {
-      x: fp.x + rx,
-      y: fp.y + ry
-    };
-  }, []);
 
   const calculateTraceLength = (trace: PCBTrace) => {
     let length = 0;
@@ -76,157 +60,18 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
     return length;
   };
 
+  const boardAnalysis = useMemo(() => analyzeBoard(layoutData), [layoutData]);
   const layoutMetrics = useMemo(() => {
-    const netToPads: Record<string, number> = {};
-    layoutData.footprints.forEach(fp => {
-      fp.pads.forEach(pad => {
-        if (!pad.net || pad.net === 'GND') return;
-        netToPads[pad.net] = (netToPads[pad.net] || 0) + 1;
-      });
-    });
-
-    const routableNets = Object.keys(netToPads).filter(net => netToPads[net] > 1);
-    const routedNets = routableNets.filter(net => layoutData.traces.some(trace => trace.net === net));
+    const routableNets = boardAnalysis.nets.filter(net => net.padCount > 1);
+    const routedNets = routableNets.filter(net => net.fullyRouted);
     const totalTraceLength = layoutData.traces.reduce((sum, trace) => sum + calculateTraceLength(trace), 0);
-    const copperArea = layoutData.traces.reduce((sum, trace) => sum + calculateTraceLength(trace) * trace.width, 0);
-    const boardArea = Math.max(1, layoutData.boardWidth * layoutData.boardHeight);
-
     return {
       routableNets: routableNets.length,
       routedNets: routedNets.length,
-      unroutedNets: Math.max(0, routableNets.length - routedNets.length),
+      unroutedNets: routableNets.length - routedNets.length,
       totalTraceLength,
-      copperDensity: (copperArea / boardArea) * 100
     };
-  }, [layoutData]);
-
-  // Run Design Rule Checking (DRC)
-  // Check for overlap of traces/pads belonging to different nets
-  const runDRC = useCallback(() => {
-    const errors: string[] = [];
-    const minClearance = 0.25; // 0.25mm minimum clearance
-
-    const { footprints, traces, vias } = layoutData;
-
-    footprints.forEach(fp => {
-      if (
-        fp.x - fp.width / 2 < 0 ||
-        fp.x + fp.width / 2 > layoutData.boardWidth ||
-        fp.y - fp.height / 2 < 0 ||
-        fp.y + fp.height / 2 > layoutData.boardHeight
-      ) {
-        errors.push(`Board edge violation: Footprint ${fp.id} exceeds the board outline`);
-      }
-    });
-
-    traces.forEach(trace => {
-      if (trace.width < 0.2) {
-        errors.push(`Fabrication violation: Trace ${trace.net} width ${trace.width.toFixed(2)}mm is below 0.20mm`);
-      }
-      trace.points.forEach(point => {
-        if (point.x < 0 || point.x > layoutData.boardWidth || point.y < 0 || point.y > layoutData.boardHeight) {
-          errors.push(`Board edge violation: Trace ${trace.net} exits the board outline`);
-        }
-      });
-    });
-
-    vias.forEach(via => {
-      if (via.drillDiameter < 0.35) {
-        errors.push(`Fabrication violation: Via ${via.id} drill ${via.drillDiameter.toFixed(2)}mm is below 0.35mm`);
-      }
-      if (via.x < 0 || via.x > layoutData.boardWidth || via.y < 0 || via.y > layoutData.boardHeight) {
-        errors.push(`Board edge violation: Via ${via.id} exits the board outline`);
-      }
-    });
-
-    // Helper: distance between point and line segment
-    const distPointToSegment = (px: number, py: number, x1: number, y1: number, x2: number, y2: number) => {
-      const l2 = (x2 - x1) ** 2 + (y2 - y1) ** 2;
-      if (l2 === 0) return Math.sqrt((px - x1) ** 2 + (py - y1) ** 2);
-      let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
-      t = Math.max(0, Math.min(1, t));
-      return Math.sqrt((px - (x1 + t * (x2 - x1))) ** 2 + (py - (y1 + t * (y2 - y1))) ** 2);
-    };
-
-    // 1. Check footprint pads vs footprint pads (different nets)
-    for (let i = 0; i < footprints.length; i++) {
-      const fp1 = footprints[i];
-      for (let j = i + 1; j < footprints.length; j++) {
-        const fp2 = footprints[j];
-        fp1.pads.forEach(p1 => {
-          fp2.pads.forEach(p2 => {
-            if (p1.net && p2.net && p1.net !== p2.net) {
-              const c1 = getPadBoardCoords(fp1, p1);
-              const c2 = getPadBoardCoords(fp2, p2);
-              const dist = Math.sqrt((c1.x - c2.x) ** 2 + (c1.y - c2.y) ** 2);
-              const r1 = p1.diameter / 2;
-              const r2 = p2.diameter / 2;
-              if (dist < r1 + r2 + minClearance) {
-                errors.push(`Clearance violation: Pad ${fp1.id}:${p1.id} to Pad ${fp2.id}:${p2.id} (${(dist - r1 - r2).toFixed(2)}mm)`);
-              }
-            }
-          });
-        });
-      }
-    }
-
-    // 2. Check trace vs pad (different nets)
-    traces.forEach(trace => {
-      footprints.forEach(fp => {
-        fp.pads.forEach(pad => {
-          if (pad.net && trace.net !== pad.net) {
-            const padCoords = getPadBoardCoords(fp, pad);
-            for (let i = 0; i < trace.points.length - 1; i++) {
-              const p1 = trace.points[i];
-              const p2 = trace.points[i + 1];
-              const dist = distPointToSegment(padCoords.x, padCoords.y, p1.x, p1.y, p2.x, p2.y);
-              const padRadius = pad.diameter / 2;
-              const traceRadius = trace.width / 2;
-              if (dist < padRadius + traceRadius + minClearance) {
-                errors.push(`Clearance violation: Trace ${trace.net} to Pad ${fp.id}:${pad.id} (${(dist - padRadius - traceRadius).toFixed(2)}mm)`);
-              }
-            }
-          }
-        });
-      });
-    });
-
-    // 3. Check trace vs trace (different nets)
-    for (let i = 0; i < traces.length; i++) {
-      const t1 = traces[i];
-      for (let j = i + 1; j < traces.length; j++) {
-        const t2 = traces[j];
-        if (t1.net !== t2.net) {
-          // Check segments
-          for (let s1 = 0; s1 < t1.points.length - 1; s1++) {
-            const a1 = t1.points[s1];
-            const a2 = t1.points[s1 + 1];
-            for (let s2 = 0; s2 < t2.points.length - 1; s2++) {
-              const b1 = t2.points[s2];
-              const b2 = t2.points[s2 + 1];
-
-              // Approximate check: minimum distance between two segments
-              // We'll check endpoints distances
-              const dist1 = distPointToSegment(a1.x, a1.y, b1.x, b1.y, b2.x, b2.y);
-              const dist2 = distPointToSegment(a2.x, a2.y, b1.x, b1.y, b2.x, b2.y);
-              const minDist = Math.min(dist1, dist2);
-              const rSum = t1.width / 2 + t2.width / 2;
-              if (minDist < rSum + minClearance) {
-                errors.push(`Clearance violation: Trace ${t1.net} to Trace ${t2.net} (${(minDist - rSum).toFixed(2)}mm)`);
-              }
-            }
-          }
-        }
-      }
-    }
-
-    setDrcErrors(errors);
-  }, [layoutData, setDrcErrors, getPadBoardCoords]);
-
-  // Run DRC and draw airwires whenever components or traces change
-  useEffect(() => {
-    runDRC();
-  }, [runDRC]);
+  }, [layoutData, boardAnalysis]);
 
   // Canvas drawing loop
   useEffect(() => {
@@ -262,6 +107,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
 
     // 1. Draw Traces
     traces.forEach(trace => {
+      if (trace.points.length < 2) return;
       ctx.beginPath();
       ctx.lineWidth = trace.width * SCALE;
       ctx.strokeStyle = trace.layer === 'top' ? '#ef4444' : '#3b82f6'; // Red for top layer, blue for bottom
@@ -388,68 +234,30 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
       ctx.fill();
     });
 
-    // 5. Draw Ratsnest airwires (Unrouted Net Connections)
-    // Find all nets in footprints
-    const netToPads: Record<string, { x: number; y: number }[]> = {};
-    footprints.forEach(fp => {
-      fp.pads.forEach(pad => {
-        if (pad.net && pad.net !== 'GND') { // GND can use solid copper pour, we skip GND in ratsnest for clean view
-          if (!netToPads[pad.net]) netToPads[pad.net] = [];
-          netToPads[pad.net].push(getPadBoardCoords(fp, pad));
-        }
-      });
-    });
-
-    // For each net, draw dotted lines connecting all pads, skipping if already routed
-    ctx.strokeStyle = 'rgba(245, 158, 11, 0.45)'; // trans gold
+    // Only missing connections remain visible, including GND.
+    ctx.strokeStyle = 'rgba(245, 158, 11, 0.7)';
     ctx.lineWidth = 1;
     ctx.setLineDash([2, 4]);
-
-    Object.keys(netToPads).forEach(net => {
-      const pads = netToPads[net];
-      if (pads.length < 2) return;
-
-      // Draw ratsnest lines in a daisy chain
-      for (let i = 0; i < pads.length - 1; i++) {
-        // Simple routing check: has this net already been routed between these pads?
-        // We look if there is a trace for this net
-        const isRouted = traces.some(t => t.net === net);
-        if (!isRouted) {
-          ctx.beginPath();
-          ctx.moveTo(pads[i].x * SCALE, pads[i].y * SCALE);
-          ctx.lineTo(pads[i + 1].x * SCALE, pads[i + 1].y * SCALE);
-          ctx.stroke();
-        }
-      }
+    boardAnalysis.airwires.forEach(({ from, to }) => {
+      ctx.beginPath();
+      ctx.moveTo(from.x * SCALE, from.y * SCALE);
+      ctx.lineTo(to.x * SCALE, to.y * SCALE);
+      ctx.stroke();
     });
     ctx.setLineDash([]);
 
-    // 6. Draw DRC Violation Markers
-    // Parse DRC messages to find locations and highlight
-    drcErrors.forEach(err => {
-      // Crude parsing to find which pads are involved
-      const match = err.match(/Pad ([R|C|Q|U|V]\d+:\w+)/g);
-      if (match) {
-        match.forEach(pLabel => {
-          const cleanLabel = pLabel.replace('Pad ', '');
-          const [fpId, padId] = cleanLabel.split(':');
-          const fp = footprints.find(f => f.id === fpId);
-          const pad = fp?.pads.find(p => p.id === padId);
-          if (fp && pad) {
-            const pc = getPadBoardCoords(fp, pad);
-            ctx.beginPath();
-            ctx.arc(pc.x * SCALE, pc.y * SCALE, (pad.diameter + 0.5) * SCALE, 0, 2 * Math.PI);
-            ctx.strokeStyle = '#ef4444';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([2, 2]);
-            ctx.stroke();
-            ctx.setLineDash([]);
-          }
-        });
-      }
+    boardAnalysis.issues.forEach(issue => {
+      if (issue.x === undefined || issue.y === undefined) return;
+      ctx.beginPath();
+      ctx.arc(issue.x * SCALE, issue.y * SCALE, 11, 0, 2 * Math.PI);
+      ctx.strokeStyle = '#ef4444';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([2, 2]);
+      ctx.stroke();
+      ctx.setLineDash([]);
     });
 
-  }, [layoutData, selectedCompId, routingStart, routingPoints, mousePos, activeLayer, isRouting, drcErrors, showGroundPour, showMeasurements, activeTraceWidth, boardWidthPx, boardHeightPx, getPadBoardCoords]);
+  }, [layoutData, selectedCompId, routingStart, routingPoints, mousePos, activeLayer, isRouting, drcErrors, showGroundPour, showMeasurements, activeTraceWidth, boardWidthPx, boardHeightPx, boardAnalysis]);
 
   // Handle canvas mouse actions
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -471,6 +279,11 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
     });
 
     if (clickedPad && (clickedPad as Pad).net) {
+      if (activeLayer === 'bottom' && (clickedPad as Pad).holeDiameter === 0) {
+        setRouteNotice('Surface-mount pads are on top copper. Switch layers through a via first.');
+        return;
+      }
+      setRouteNotice('');
       if (!isRouting) {
         // Start trace routing
         setIsRouting(true);
@@ -489,7 +302,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
         // End trace routing by clicking on another pad of the SAME net
         const destPad = clickedPad as Pad;
         const start = routingStart;
-        if (start && destPad.net && destPad.net === start.pad.net && clickedPadFpId !== start.fpId) {
+        if (start && destPad.net && destPad.net === start.pad.net && (clickedPadFpId !== start.fpId || destPad.id !== start.pad.id)) {
           const padCoords = getPadBoardCoords(
             layoutData.footprints.find(f => f.id === clickedPadFpId)!,
             destPad
@@ -523,14 +336,12 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
 
     // 2. Check if clicked on a footprint body (to drag)
     const clickedFp = layoutData.footprints.find(fp => {
-      const halfW = fp.width / 2;
-      const halfH = fp.height / 2;
-      return (
-        mm.x >= fp.x - halfW &&
-        mm.x <= fp.x + halfW &&
-        mm.y >= fp.y - halfH &&
-        mm.y <= fp.y + halfH
-      );
+      const angle = -fp.rotation * Math.PI / 180;
+      const dx = mm.x - fp.x;
+      const dy = mm.y - fp.y;
+      const localX = dx * Math.cos(angle) - dy * Math.sin(angle);
+      const localY = dx * Math.sin(angle) + dy * Math.cos(angle);
+      return Math.abs(localX) <= fp.width / 2 && Math.abs(localY) <= fp.height / 2;
     });
 
     if (clickedFp) {
@@ -592,13 +403,20 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
       drillDiameter: 0.4
     };
 
+    const start = routingStart!;
+    const segment: PCBTrace = {
+      id: `trace_${crypto.randomUUID()}`, net, width: activeTraceWidth, layer: activeLayer,
+      points: [{ x: start.x, y: start.y }, ...routingPoints, { ...mousePos }],
+    };
     onUpdateLayout({
       ...layoutData,
+      traces: [...layoutData.traces, segment],
       vias: [...layoutData.vias, newVia]
     });
-    setRoutingPoints([...routingPoints, mousePos]);
+    setRoutingStart({ ...start, x: mousePos.x, y: mousePos.y });
+    setRoutingPoints([]);
     setActiveLayer(activeLayer === 'top' ? 'bottom' : 'top');
-  }, [activeLayer, isRouting, layoutData, mousePos, onUpdateLayout, routingPoints, routingStart]);
+  }, [activeLayer, activeTraceWidth, isRouting, layoutData, mousePos, onUpdateLayout, routingPoints, routingStart]);
 
   const handleClearRoutes = () => {
     onUpdateLayout({
@@ -615,6 +433,13 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
   // Keyboard rotation or trace deleting
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+      if (e.key === 'Escape') {
+        setIsRouting(false);
+        setRoutingStart(null);
+        setRoutingPoints([]);
+      }
       if (e.key.toLowerCase() === 'r' && selectedCompId) {
         const updatedFps = layoutData.footprints.map(fp => {
           if (fp.id === selectedCompId) {
@@ -642,166 +467,101 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedCompId, layoutData, onUpdateLayout, isRouting, handleDropVia, onSelectComponent]);
 
-  // Lee's Grid Autorouter (BFS Pathfinding on 1.0mm grid)
+  // Bounded two-dimensional Lee router. Every proposed segment is checked
+  // against actual top copper, including existing segment interiors and vias.
   const triggerAutoroute = () => {
-    const gridSpacing = 1.0; // mm
-    const wCells = Math.ceil(layoutData.boardWidth / gridSpacing);
-    const hCells = Math.ceil(layoutData.boardHeight / gridSpacing);
-
-    // Get all nets that have pins needing connection
-    const netToPads: Record<string, { x: number; y: number; padId: string; fpId: string }[]> = {};
-    layoutData.footprints.forEach(fp => {
-      fp.pads.forEach(pad => {
-        if (pad.net && pad.net !== 'GND') { // GND is connected to ground plane
-          if (!netToPads[pad.net]) netToPads[pad.net] = [];
-          const coords = getPadBoardCoords(fp, pad);
-          netToPads[pad.net].push({
-            x: coords.x,
-            y: coords.y,
-            padId: pad.id,
-            fpId: fp.id
-          });
-        }
-      });
-    });
-
-    const routedTraces: PCBTrace[] = [...layoutData.traces];
-
-    // Build obstacle map from footprints centers
-    // Grid: true for occupied/obstacle, false for open
-    const baseObstacles = Array(hCells).fill(0).map(() => Array(wCells).fill(false));
-
-    // Place obstacle boxes around component bodies (excluding their pads)
-    layoutData.footprints.forEach(fp => {
-      const minCol = Math.max(0, Math.floor((fp.x - fp.width / 2 + 1) / gridSpacing));
-      const maxCol = Math.min(wCells - 1, Math.ceil((fp.x + fp.width / 2 - 1) / gridSpacing));
-      const minRow = Math.max(0, Math.floor((fp.y - fp.height / 2 + 1) / gridSpacing));
-      const maxRow = Math.min(hCells - 1, Math.ceil((fp.y + fp.height / 2 - 1) / gridSpacing));
-
-      for (let r = minRow; r <= maxRow; r++) {
-        for (let c = minCol; c <= maxCol; c++) {
-          baseObstacles[r][c] = true;
-        }
-      }
-    });
-
-    // Helper: A* or BFS routing between two nodes
-    const routeNets = (
-      xStart: number, yStart: number,
-      xEnd: number, yEnd: number,
-      currentNetName: string
-    ): { x: number; y: number }[] | null => {
-      // Convert mm to grid indices
-      const startC = Math.round(xStart / gridSpacing);
-      const startR = Math.round(yStart / gridSpacing);
-      const endC = Math.round(xEnd / gridSpacing);
-      const endR = Math.round(yEnd / gridSpacing);
-
-      // BFS Queue
-      const queue: [number, number][] = [[startR, startC]];
-      const visited = Array(hCells).fill(0).map(() => Array(wCells).fill(false));
-      const parent: Record<string, string> = {};
-
-      visited[startR][startC] = true;
-
-      // Directions: N, S, E, W
-      const dRow = [-1, 1, 0, 0];
-      const dCol = [0, 0, 1, -1];
-
-      let found = false;
-
-      while (queue.length > 0) {
-        const [r, c] = queue.shift()!;
-        if (r === endR && c === endC) {
-          found = true;
-          break;
-        }
-
-        for (let d = 0; d < 4; d++) {
-          const nextR = r + dRow[d];
-          const nextC = c + dCol[d];
-
-          if (
-            nextR >= 0 && nextR < hCells &&
-            nextC >= 0 && nextC < wCells &&
-            !visited[nextR][nextC]
-          ) {
-            // Check if grid node is blocked
-            // It is blocked if it's in baseObstacles and NOT the start or end cell
-            let isBlocked = baseObstacles[nextR][nextC];
-            
-            // Check if blocked by already routed traces of OTHER nets
-            routedTraces.forEach(trace => {
-              if (trace.net !== currentNetName) {
-                trace.points.forEach(pt => {
-                  const ptC = Math.round(pt.x / gridSpacing);
-                  const ptR = Math.round(pt.y / gridSpacing);
-                  if (ptC === nextC && ptR === nextR) {
-                    isBlocked = true;
-                  }
-                });
-              }
-            });
-
-            if (!isBlocked || (nextR === endR && nextC === endC)) {
-              visited[nextR][nextC] = true;
-              queue.push([nextR, nextC]);
-              parent[`${nextR},${nextC}`] = `${r},${c}`;
-            }
-          }
-        }
-      }
-
-      if (!found) return null;
-
-      // Reconstruct path
-      const path: { x: number; y: number }[] = [];
-      let curr = `${endR},${endC}`;
-      while (curr) {
-        const [r, c] = curr.split(',').map(Number);
-        path.unshift({ x: c * gridSpacing, y: r * gridSpacing });
-        curr = parent[curr];
-      }
-
-      // Add actual high precision pad terminals
-      path[0] = { x: xStart, y: yStart };
-      path[path.length - 1] = { x: xEnd, y: yEnd };
-
-      return path;
+    const gridSpacing = 1;
+    const wCells = Math.floor(layoutData.boardWidth / gridSpacing) + 1;
+    const hCells = Math.floor(layoutData.boardHeight / gridSpacing) + 1;
+    if (wCells * hCells > 250_000) {
+      setRouteNotice('This board is too large for the interactive 1mm-grid router. Route manually.');
+      return;
+    }
+    const routedTraces = [...layoutData.traces];
+    let searchedCells = 0;
+    const roundObstacles = [
+      ...layoutData.footprints.flatMap(fp => fp.pads.map(pad => ({
+        ...getPadBoardCoords(fp, pad), radius: pad.diameter / 2, net: pad.net,
+      }))),
+      ...layoutData.vias.map(via => ({ ...via, radius: via.diameter / 2 })),
+    ];
+    const radius = activeTraceWidth / 2;
+    const edge = radius + BOARD_RULES.edgeClearance;
+    const inside = (p: { x: number; y: number }) => p.x >= edge && p.y >= edge &&
+      p.x <= layoutData.boardWidth - edge && p.y <= layoutData.boardHeight - edge;
+    const clearSegment = (a: { x: number; y: number }, b: { x: number; y: number }, net: string) => {
+      if (!inside(a) || !inside(b)) return false;
+      if (roundObstacles.some(pad => (!pad.net || pad.net !== net) &&
+        pointSegmentDistance(pad, a, b) < pad.radius + radius + BOARD_RULES.clearance - 1e-9)) return false;
+      return !routedTraces.some(trace => trace.layer === 'top' && (!trace.net || trace.net !== net) &&
+        trace.points.slice(1).some((p, i) => segmentDistance(a, b, trace.points[i], p) <
+          trace.width / 2 + radius + BOARD_RULES.clearance - 1e-9));
     };
-
-    // Process each net and lay down paths
-    Object.keys(netToPads).forEach(net => {
-      const pads = netToPads[net];
-      if (pads.length < 2) return;
-
-      // Check if already routed, if so skip
-      const alreadyRouted = routedTraces.some(t => t.net === net);
-      if (alreadyRouted) return;
-
-      // Route sequential pairs
-      for (let i = 0; i < pads.length - 1; i++) {
-        const p1 = pads[i];
-        const p2 = pads[i + 1];
-
-        const pathPoints = routeNets(p1.x, p1.y, p2.x, p2.y, net);
-        if (pathPoints) {
-          const newTrace: PCBTrace = {
-            id: `trace_${net}_${i}_${Date.now()}`,
-            net,
-            points: pathPoints,
-            width: activeTraceWidth,
-            layer: 'top'
-          };
-          routedTraces.push(newTrace);
+    const route = (from: { x: number; y: number }, to: { x: number; y: number }, net: string) => {
+      const startC = Math.round(from.x / gridSpacing);
+      const startR = Math.round(from.y / gridSpacing);
+      const endC = Math.round(to.x / gridSpacing);
+      const endR = Math.round(to.y / gridSpacing);
+      if ([startC, endC].some(c => c < 0 || c >= wCells) || [startR, endR].some(r => r < 0 || r >= hCells)) return null;
+      const start = startR * wCells + startC;
+      const end = endR * wCells + endC;
+      const toPoint = (index: number) => ({ x: index % wCells * gridSpacing, y: Math.floor(index / wCells) * gridSpacing });
+      if (!clearSegment(from, toPoint(start), net) || !clearSegment(toPoint(end), to, net)) return null;
+      const parent = new Int32Array(wCells * hCells).fill(-1);
+      const queue = [start];
+      parent[start] = start;
+      let head = 0;
+      while (head < queue.length && parent[end] === -1 && searchedCells < 100_000) {
+        const current = queue[head++];
+        searchedCells++;
+        const c = current % wCells;
+        const r = Math.floor(current / wCells);
+        for (const [dc, dr] of [[0, -1], [0, 1], [1, 0], [-1, 0]]) {
+          const nextC = c + dc;
+          const nextR = r + dr;
+          if (nextC < 0 || nextR < 0 || nextC >= wCells || nextR >= hCells) continue;
+          const next = nextR * wCells + nextC;
+          if (parent[next] !== -1 || !clearSegment(toPoint(current), toPoint(next), net)) continue;
+          parent[next] = current;
+          queue.push(next);
         }
       }
-    });
-
-    onUpdateLayout({
-      ...layoutData,
-      traces: routedTraces
-    });
+      if (parent[end] === -1) return null;
+      const path = [to];
+      for (let current = end; ; current = parent[current]) {
+        path.push(toPoint(current));
+        if (current === start) break;
+      }
+      path.push(from);
+      path.reverse();
+      const compact: { x: number; y: number }[] = [];
+      path.forEach(point => {
+        const last = compact.at(-1);
+        if (last && last.x === point.x && last.y === point.y) return;
+        const previous = compact.at(-2);
+        if (previous && last && ((previous.x === last.x && last.x === point.x) ||
+          (previous.y === last.y && last.y === point.y))) compact.pop();
+        compact.push(point);
+      });
+      return compact.length >= 2 ? compact : null;
+    };
+    const attempted = new Set<string>();
+    let added = 0;
+    let attempts = 0;
+    while (attempts < 100 && searchedCells < 100_000) {
+      const analysis = analyzeBoard({ ...layoutData, traces: routedTraces });
+      const connection = analysis.airwires.find(wire => !attempted.has(JSON.stringify(wire)));
+      if (!connection) break;
+      attempted.add(JSON.stringify(connection));
+      attempts++;
+      const points = route(connection.from, connection.to, connection.net);
+      if (!points) continue;
+      routedTraces.push({ id: `trace_${crypto.randomUUID()}`, net: connection.net, points, width: activeTraceWidth, layer: 'top' });
+      added++;
+    }
+    const missing = analyzeBoard({ ...layoutData, traces: routedTraces }).airwires.length;
+    setRouteNotice(`Added ${added} top-layer routes. ${missing} connections remain${missing ? '; use manual routing and vias where the 1mm grid cannot reach' : ''}.`);
+    onUpdateLayout({ ...layoutData, traces: routedTraces });
   };
 
   return (
@@ -811,6 +571,8 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
         <div className="px-3 py-1.5 bg-zinc-900/80 backdrop-blur border border-zinc-800 rounded-lg flex items-center gap-3 text-xs text-zinc-400 font-mono">
           <button
             onClick={() => setActiveLayer(activeLayer === 'top' ? 'bottom' : 'top')}
+            disabled={isRouting}
+            title={isRouting ? 'Drop a via (V) to switch layers while routing' : 'Switch active copper layer'}
             className="flex items-center gap-1.5 hover:text-white transition-colors"
           >
             <span
@@ -835,6 +597,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
 
         <button
           onClick={triggerAutoroute}
+          disabled={isRouting}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 border border-cyan-500 rounded-lg text-white font-mono text-xs transition-all shadow-lg shadow-cyan-600/20 active:scale-95"
         >
           <Route className="w-3.5 h-3.5" />
@@ -854,10 +617,11 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
 
         <button
           onClick={() => setShowGroundPour(!showGroundPour)}
+          title="Decorative preview only; no ground copper is generated or exported"
           className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900/80 border border-zinc-800 rounded-lg text-zinc-300 font-mono text-xs transition-all"
         >
           <Layers className="w-3.5 h-3.5 text-emerald-400" />
-          Ground Pour {showGroundPour ? 'On' : 'Off'}
+          Pour Preview {showGroundPour ? 'On' : 'Off'}
         </button>
 
         <button
@@ -887,7 +651,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
         <div>
           {drcErrors.length === 0 ? (
             <span className="text-emerald-400 flex items-center gap-1">
-              <CheckCircle className="w-3.5 h-3.5" /> DRC Passed
+              <CheckCircle className="w-3.5 h-3.5" /> Board checks clear
             </span>
           ) : (
             <span className="text-red-400 flex items-center gap-1">
@@ -901,12 +665,18 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
         <div className="text-zinc-500">
           Copper: <span className="text-zinc-300">{layoutMetrics.totalTraceLength.toFixed(1)}mm</span>
           <span> / </span>
-          <span className="text-zinc-300">{layoutMetrics.copperDensity.toFixed(1)}%</span>
+          <span className="text-zinc-300">{boardAnalysis.routingCompletion.toFixed(0)}% connected</span>
         </div>
         {layoutMetrics.unroutedNets > 0 && (
           <div className="text-amber-500">Unrouted nets: {layoutMetrics.unroutedNets}</div>
         )}
       </div>
+
+      {(routeNotice || showGroundPour) && (
+        <div role="status" className="absolute bottom-3 left-3 z-10 max-w-lg rounded-lg border border-amber-800/60 bg-zinc-950/95 px-3 py-2 text-xs text-amber-300">
+          {routeNotice || 'Pour preview is decorative. GND requires routed copper; no plane is generated or exported.'}
+        </div>
+      )}
 
       {/* Canvas container */}
       <div className="flex-1 overflow-auto flex items-center justify-center p-4">
@@ -917,6 +687,8 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          aria-label="PCB layout canvas. Click a pad to route, V to add a via, Escape to cancel."
           className="border border-zinc-800 rounded-lg shadow-2xl relative select-none cursor-crosshair max-w-full"
           onContextMenu={(e) => {
             e.preventDefault();

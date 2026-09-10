@@ -14,6 +14,9 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
   const [riseTime, setRiseTime] = useState('0.5'); // ns
   const [sourceImpedance, setSourceImpedance] = useState('50'); // ohms
   const [loadImpedance, setLoadImpedance] = useState('10000'); // high-z CMOS load
+  const [substrateHeight, setSubstrateHeight] = useState('1.6');
+  const [dielectricConstant, setDielectricConstant] = useState('4.5');
+  const [copperThickness, setCopperThickness] = useState('35');
 
   const traces = layoutData.traces;
   const activeTraceId = traces.some(t => t.id === selectedTraceId) ? selectedTraceId : traces[0]?.id ?? '';
@@ -23,19 +26,17 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
   }, [traces, activeTraceId]);
 
   // Compute Signal Integrity Report
-  const siReport = useMemo(() => {
-    if (!activeTrace) return null;
-    return analyzeTraceSI(
-      activeTrace,
-      traces,
-      1.6, // substrate height (mm)
-      4.5, // er (FR4)
-      35,  // copper thick (um)
-      parseFloat(riseTime) || 0.5,
-      parseFloat(sourceImpedance) || 50,
-      parseFloat(loadImpedance) || 10000
-    );
-  }, [activeTrace, traces, riseTime, sourceImpedance, loadImpedance]);
+  const analysis = useMemo(() => {
+    if (!activeTrace) return { report: null, error: '' };
+    try {
+      const values = [substrateHeight, dielectricConstant, copperThickness, riseTime, sourceImpedance, loadImpedance];
+      if (values.some(value => value.trim() === '')) throw new Error('Complete every model input to calculate an estimate.');
+      return { report: analyzeTraceSI(activeTrace, traces, ...values.map(Number) as [number, number, number, number, number, number]), error: '' };
+    } catch (error) {
+      return { report: null, error: error instanceof Error ? error.message : 'Invalid signal model inputs.' };
+    }
+  }, [activeTrace, traces, riseTime, sourceImpedance, loadImpedance, substrateHeight, dielectricConstant, copperThickness]);
+  const siReport = analysis.report;
 
   // Simulate reflections ringing graph
   const ringingData = useMemo(() => {
@@ -84,6 +85,7 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
 
   return (
     <div className="flex-1 bg-zinc-950 p-6 flex flex-col gap-6 text-zinc-100 overflow-y-auto h-full">
+      <div className="text-xs text-zinc-400">Explore a uniform microstrip and a 3.3 V step. Set the distance to the reference plane from your fabricator's stackup; board thickness alone does not establish this distance.</div>
       {/* Parameter Inputs bar */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         {/* Trace Selector */}
@@ -98,6 +100,7 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
             </div>
           ) : (
             <select
+              aria-label="Trace to inspect"
               value={activeTraceId}
               onChange={(e) => setSelectedTraceId(e.target.value)}
               className="w-full bg-zinc-950 border border-zinc-800 focus:border-cyan-500 focus:outline-none rounded px-3 py-2 text-xs font-mono text-zinc-200"
@@ -121,6 +124,7 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
             <div className="space-y-1.5">
               <label className="text-[10px] text-zinc-500 font-mono">Rise Time tr (ns)</label>
               <input
+                aria-label="Rise time (ns)"
                 type="text"
                 value={riseTime}
                 onChange={(e) => setRiseTime(e.target.value)}
@@ -130,6 +134,7 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
             <div className="space-y-1.5">
               <label className="text-[10px] text-zinc-500 font-mono">Source Zs (Ω)</label>
               <input
+                aria-label="Source impedance (ohm)"
                 type="text"
                 value={sourceImpedance}
                 onChange={(e) => setSourceImpedance(e.target.value)}
@@ -139,6 +144,7 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
             <div className="space-y-1.5">
               <label className="text-[10px] text-zinc-500 font-mono">Load Zl (Ω)</label>
               <input
+                aria-label="Load impedance (ohm)"
                 type="text"
                 value={loadImpedance}
                 onChange={(e) => setLoadImpedance(e.target.value)}
@@ -150,12 +156,18 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
 
         {/* Board Parameters info */}
         <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-5 backdrop-blur text-xs font-mono text-zinc-400 space-y-1.5">
-          <div className="font-bold text-zinc-300 mb-1">Substrate Stackup</div>
-          <div>Dielectric (er): <span className="text-zinc-200">4.5 (FR4)</span></div>
-          <div>Prepreg Height: <span className="text-zinc-200">1.60 mm</span></div>
-          <div>Copper Weight: <span className="text-zinc-200">1.0 oz (35um)</span></div>
+          <div className="font-bold text-zinc-300 mb-1">Stackup assumptions</div>
+          {[
+            { label: 'Plane distance (mm)', value: substrateHeight, set: setSubstrateHeight },
+            { label: 'Dielectric constant', value: dielectricConstant, set: setDielectricConstant },
+            { label: 'Copper thickness (um)', value: copperThickness, set: setCopperThickness },
+          ].map(input => <label key={input.label} className="flex flex-col gap-1">
+            {input.label}
+            <input aria-label={input.label} type="text" value={input.value} onChange={event => input.set(event.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded px-2.5 py-1 text-xs text-zinc-200 font-mono" />
+          </label>)}
         </div>
       </div>
+      {analysis.error && <div role="alert" className="text-xs text-red-400">{analysis.error}</div>}
 
       {/* Main Analysis grid */}
       {siReport && activeTrace && (
@@ -163,10 +175,10 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
           {/* Signal Ringing Oscilloscope Simulation */}
           <div className="bg-zinc-900/30 border border-zinc-800/80 rounded-2xl p-5 shadow-xl lg:col-span-2 flex flex-col gap-4">
             <h4 className="text-xs font-bold font-mono tracking-wider text-zinc-300">
-              STEP LOAD REFLECTION WAVEFORM (RINGING SOLVER)
+              ESTIMATED LOAD STEP RESPONSE
             </h4>
             <div className="bg-[#070709] border border-zinc-850 rounded-xl p-4 flex items-center justify-center">
-              <svg width={scopeWidth} height={scopeHeight} className="select-none">
+              <svg viewBox={`0 0 ${scopeWidth} ${scopeHeight}`} style={{ width: '100%', maxWidth: scopeWidth }} className="select-none" role="img" aria-label="Estimated load voltage versus time">
                 {/* Horizontal divisions grid */}
                 {Array.from({ length: 4 }).map((_, idx) => {
                   const y = padding + ((idx + 1) / 5) * (scopeHeight - 2 * padding);
@@ -255,7 +267,7 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
                   <span className="text-zinc-200 font-bold">{(siReport.propagationDelay * 1000).toFixed(0)} ps</span>
                 </div>
                 <div className="flex justify-between border-b border-zinc-800/40 pb-1.5">
-                  <span>Crosstalk Coupling:</span>
+                  <span>Coupling indicator:</span>
                   <span className={siReport.crosstalkPeakVoltage > 150 ? 'text-red-400 font-bold' : 'text-emerald-400 font-bold'}>
                     {siReport.crosstalkPeakVoltage.toFixed(0)} mV
                   </span>
@@ -266,7 +278,7 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
                 </div>
                 {siReport.ringingFrequency && (
                   <div className="flex justify-between border-b border-zinc-800/40 pb-1.5">
-                    <span>Ringing Freq:</span>
+                    <span>Round-trip scale:</span>
                     <span className="text-amber-400 font-bold">{(siReport.ringingFrequency).toFixed(2)} GHz</span>
                   </div>
                 )}
@@ -282,6 +294,7 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
                 </div>
               ))}
             </div>
+            <div className="mt-3 text-xs text-zinc-500">{siReport.modelNotes.map(note => <p key={note}>{note}</p>)}</div>
           </div>
         </div>
       )}

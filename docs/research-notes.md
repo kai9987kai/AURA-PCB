@@ -1,0 +1,25 @@
+# Research behind the verification update
+
+Sources were checked on 10 September 2026. The recent papers below motivate stronger verification and evaluation. Their reported performance does not establish AURA-PCB accuracy, and no model training or benchmark reproduction was performed here.
+
+## Recent routing research
+
+- [PCBWorld, version 3, 3 September 2026](https://arxiv.org/abs/2607.05915) describes routing through KiCad operations with feedback from the engine and evaluates resulting boards with engine-checked metrics. It includes synthetic families and 679 real boards. **Application:** calculate connectivity and geometric violations from the actual copper after edits, rather than infer completion from the presence of traces.
+- [OmniRouting, 5 August 2026](https://arxiv.org/abs/2608.04434) separates geometry, design rules, electrical connectivity, and tool-augmented routing across 1,681 schematic-coupled designs. The abstract reports model limitations and promises a future release of data/tools; availability was not assumed. **Application:** report missing connections and geometric problems independently, and preserve ground connectivity requirements.
+
+These are recent research papers, not manufacturing standards or a reason to substitute generated routes for verification. A future routing comparison should freeze the input boards, rules, and route budget; compare to a deterministic baseline; and report disconnected pad groups, short circuits, clearance findings, trace length, and via count separately.
+
+## Established design references
+
+- [KiCad 10 PCB Editor: design rules checking](https://docs.kicad.org/10.0/en/pcbnew/pcbnew.html#design-rules-checking) distinguishes rule violations, unconnected items, and schematic/PCB differences. **Application:** a shared board analysis feeds layout findings and design review; a route must actually connect its pads, including on GND. AURA-PCB implements only a subset of full EDA verification and does not export a production board file.
+- [Texas Instruments, *The IBIS model, Part 3*, 2011](https://www.ti.com/lit/an/slyt413/slyt413.pdf) explains why transmitter impedance, rise/fall time, receiver impedance/capacitance, and transmission-line properties matter. **Application:** changing source impedance or rise time changes the displayed response. Termination suggestions are conditional on topology, and the rise-time/6 threshold is screening rather than proof of ringing.
+- [Qucs technical documentation: single microstrip line](https://qucs.sourceforge.net/tech/node75.html) documents the Hammerstad-Jensen quasi-static model and finite conductor thickness correction. **Application:** impedance uses those equations with editable reference-plane distance, dielectric constant, and copper thickness. This assumes a uniform external trace over a continuous plane. No plane is inferred from an unrouted ground net. The model omits conductor/dielectric loss, dispersion, vias, bends, and load capacitance.
+- [Analog Devices AN-1604: thermal management calculations](https://www.analog.com/en/resources/app-notes/an-1604.html) develops package- and board-specific thermal paths involving substrate, copper, solder, and vias. **Application:** power evidence is reported separately from temperature margin; missing simulation is explicit. The application's thermal display remains an illustrative board-level model, not a junction-temperature prediction.
+
+## Implemented measurement boundaries
+
+The design review score is a checklist indicator. Empty circuits score zero; unresolved board findings cap the score; missing simulation remains incomplete. It is not a calibrated probability of success, fabrication approval, compliance result, or yield estimate. Exported review JSON records the report, source links, assumptions, timestamp, and schematic/layout snapshot.
+
+The SI table uses declared defaults and describes the longest trace object in each net; it does not solve branched end-to-end nets. The detailed SI workspace allows an individual trace and model inputs to be changed. Stackup edits there are exploratory and are not written into the board model or the review table defaults. Coupling remains a heuristic geometric indicator using parallel overlap between different nets on the same layer; it is not calibrated millivolt noise. Other-layer coupling, multiple aggressor superposition, planes, and return current are not solved.
+
+The reflection view uses a lossless line, resistive endpoints, a 3.3 V source step, and a first-order edge with the selected 10–90% rise time. Numerical sampling limits fast events; use a validated IBIS/SPICE transmission-line model for sign-off. Automated regressions cover propagation, voltage-divider limits, changed source/rise-time inputs, geometry trends, ground connectivity, invalid inputs, and missing evidence.

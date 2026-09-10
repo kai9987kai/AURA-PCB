@@ -58,14 +58,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   return (
-    <div className="w-80 flex flex-col border-r border-zinc-800 bg-zinc-950/80 backdrop-blur-md text-zinc-100 h-full select-none">
+    <aside aria-label="Component library and design properties" className="component-sidebar w-80 flex flex-col border-r border-zinc-800 bg-zinc-950/80 backdrop-blur-md text-zinc-100 h-full select-none">
       {/* Sidebar Header */}
       <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
         <h1 className="font-bold text-lg tracking-wider text-cyan-400 flex items-center gap-2">
           <Cpu className="w-5 h-5 text-cyan-400 animate-pulse" />
           AURA PCB
         </h1>
-        <span className="text-xs px-2 py-0.5 bg-zinc-800 rounded text-zinc-400 border border-zinc-700">v1.2-beta</span>
+        <span className="text-xs px-2 py-0.5 bg-zinc-800 rounded text-zinc-400 border border-zinc-700">v1.3-beta</span>
       </div>
 
       {/* Tabs */}
@@ -321,16 +321,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
             
             {drcErrors.length === 0 ? (
               <div className="bg-emerald-950/20 border border-emerald-900/50 rounded-lg p-4 text-emerald-400 text-center text-xs">
-                <div className="font-bold text-sm mb-1 text-emerald-300">✓ DRC Passed</div>
-                All physical elements satisfy layout clearances (0.25mm trace-to-trace spacing check).
+                <div className="font-bold text-sm mb-1 text-emerald-300">No automated findings</div>
+                Current geometry passes the supported checks. Review footprints and your fabricator's rules before manufacture.
               </div>
             ) : (
               <div className="space-y-2">
                 <div className="bg-red-950/20 border border-red-900/50 rounded-lg p-3 text-red-400 text-xs flex gap-2 items-center">
                   <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
                   <div>
-                    <span className="font-bold text-red-300">{drcErrors.length} Clearances Violated</span>
-                    <p className="text-[10px] text-red-400/80">Traces or pads are overlapping or closer than 0.25mm.</p>
+                    <span className="font-bold text-red-300">{drcErrors.length} Board Findings</span>
+                    <p className="text-[10px] text-red-400/80">Review connectivity, clearance, board edges, and fabrication limits.</p>
                   </div>
                 </div>
                 <div className="space-y-1 max-h-96 overflow-y-auto">
@@ -349,12 +349,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <div>Clearance (Trace-Trace): <span className="text-zinc-300">0.25 mm</span></div>
                 <div>Clearance (Trace-Pad): <span className="text-zinc-300">0.25 mm</span></div>
                 <div>Min Trace Width: <span className="text-zinc-300">0.20 mm</span></div>
-                <div>Via Drill Hole: <span className="text-zinc-300">0.40 mm</span></div>
+                <div>Minimum Drill: <span className="text-zinc-300">0.35 mm</span></div>
+                <div>Annular Ring: <span className="text-zinc-300">0.15 mm</span></div>
               </div>
             </div>
           </div>
         )}
       </div>
-    </div>
+    </aside>
   );
 };

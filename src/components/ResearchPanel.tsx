@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import type { PCBLayoutData, SchematicData, SimResult } from '../types/pcb';
 import { buildResearchReport } from '../analysis/pcbResearch';
-import { Activity, AlertTriangle, CheckCircle, Cpu, Radio, Thermometer, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle, Cpu, Download, Radio, Thermometer, Zap } from 'lucide-react';
 
 interface ResearchPanelProps {
   schematicData: SchematicData;
@@ -33,21 +33,34 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({
     () => buildResearchReport(schematicData, layoutData, simResult, drcErrors),
     [schematicData, layoutData, simResult, drcErrors]
   );
+  const downloadReport = () => {
+    const blob = new Blob([JSON.stringify({ generatedAt: new Date().toISOString(), report, design: { schematic: schematicData, layout: layoutData } }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'aura-pcb-review.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   return (
     <div className="flex-1 bg-zinc-950 p-6 flex flex-col gap-6 text-zinc-100 overflow-y-auto h-full">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div><h2 className="text-lg font-bold">Design review</h2><p className="text-xs text-zinc-400">{report.statusLabel}. Checks update with the current design.</p></div>
+        <button type="button" onClick={downloadReport} className="flex items-center gap-2 px-3 py-2 bg-zinc-900 border border-zinc-700 rounded text-xs text-zinc-200"><Download className="w-4 h-4" />Download review JSON</button>
+      </div>
       <div
         className="bg-zinc-900/40 border border-zinc-800 rounded-lg p-5"
-        style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 0.7fr) minmax(300px, 1.3fr)', gap: '1.25rem' }}
+        style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))', gap: '1.25rem' }}
       >
         <div className="flex flex-col justify-between gap-4">
           <div>
-            <div className="text-xs font-mono text-zinc-500 uppercase tracking-wider">Research readiness</div>
+            <div className="text-xs font-mono text-zinc-500 uppercase tracking-wider">Review checklist</div>
             <div className="flex items-center gap-3 mt-3">
               <Cpu className="w-12 h-12 text-cyan-400" />
               <div>
                 <div className="text-lg font-bold text-zinc-100">{report.overallScore.toFixed(0)} / 100</div>
-                <div className="text-xs text-zinc-500 font-mono">physics-informed prototype score</div>
+                <div className="text-xs text-zinc-500 font-mono">workflow coverage · not fabrication approval</div>
               </div>
             </div>
           </div>
@@ -88,19 +101,19 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 1.1fr) minmax(300px, 0.9fr)', gap: '1.5rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 350px), 1fr))', gap: '1.5rem' }}>
         <div className="bg-zinc-900/30 border border-zinc-800 rounded-lg p-5">
           <div className="flex items-center justify-between gap-3 mb-4">
             <h3 className="text-sm font-semibold text-zinc-300 flex items-center gap-2">
               <Radio className="w-4 h-4 text-purple-400" />
-              Net Physics Table
+              Copper connectivity and screening
             </h3>
-            <span className="text-xs text-zinc-500 font-mono">{report.nets.length} signal net(s)</span>
+            <span className="text-xs text-zinc-500 font-mono">{report.nets.length} net(s)</span>
           </div>
 
           {report.nets.length === 0 ? (
             <div className="text-zinc-600 text-xs py-8 text-center font-mono">
-              No multi-pad signal nets yet. Add or load a circuit to start net analysis.
+              No multi-pad nets yet. Add or load a circuit to start net analysis.
             </div>
           ) : (
             <div className="space-y-2">
@@ -126,7 +139,7 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({
                     <div style={{ color: riskColor(net.risk) }}>{net.risk.toUpperCase()}</div>
                     <div className="text-zinc-400">{net.traceLengthMm.toFixed(1)} mm</div>
                     <div className="text-zinc-500">
-                      {net.impedanceOhms ? `${net.impedanceOhms.toFixed(0)} ohm` : 'unrouted'}
+                      {net.impedanceOhms !== undefined ? `${net.impedanceOhms.toFixed(0)} ohm estimate` : 'no SI estimate'}
                       {net.delayPs ? ` / ${net.delayPs.toFixed(0)} ps` : ''}
                     </div>
                   </div>
@@ -182,7 +195,7 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({
                 <div className="text-zinc-200 font-bold mt-1">{report.manufacturing.totalTraceLengthMm.toFixed(1)} mm</div>
               </div>
               <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-3">
-                <div className="text-zinc-500">Copper density</div>
+                <div className="text-zinc-500">Trace area estimate</div>
                 <div className="text-zinc-200 font-bold mt-1">{report.manufacturing.copperDensityPct.toFixed(1)}%</div>
               </div>
               <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-3">
@@ -206,14 +219,30 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({
               Simulation Coupling
             </h3>
             <div className="text-xs text-zinc-500 font-mono space-y-2">
-              <div>SPICE transient: <span className="text-zinc-200">{simResult ? 'available' : 'not run'}</span></div>
-              <div>Power total: <span className="text-zinc-200">{report.manufacturing.totalPowerW.toFixed(3)} W</span></div>
-              <div>Peak device: <span className="text-zinc-200">{report.manufacturing.maxPowerW.toFixed(3)} W</span></div>
+              <div>Circuit power: <span className="text-zinc-200">{report.simulationAvailable ? 'available' : 'missing or invalid'}</span></div>
+              <div>Power total: <span className="text-zinc-200">{report.simulationAvailable ? `${report.manufacturing.totalPowerW.toFixed(3)} W` : 'not evaluated'}</span></div>
+              <div>Peak device: <span className="text-zinc-200">{report.simulationAvailable ? `${report.manufacturing.maxPowerW.toFixed(3)} W` : 'not evaluated'}</span></div>
               <div>Route closure: <span className="text-zinc-200">{report.routingCompletion.toFixed(0)}%</span></div>
             </div>
           </div>
         </div>
       </div>
+      {report.issues.length > 0 && <section className="bg-zinc-900/40 border border-zinc-800 rounded-lg p-5">
+        <h3 className="text-sm font-semibold text-zinc-300">Current board findings</h3>
+        <ul className="text-xs text-zinc-400 space-y-2">{report.issues.map((issue, index) => <li key={`${index}-${issue}`}>{issue}</li>)}</ul>
+      </section>}
+      <section className="bg-zinc-900/40 border border-zinc-800 rounded-lg p-5">
+        <h3 className="text-sm font-semibold text-zinc-300">Assumptions and evidence</h3>
+        {report.assumptions.map(assumption => <p key={assumption} className="text-xs text-zinc-400">{assumption}</p>)}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 270px), 1fr))', gap: '1rem', marginTop: '1rem' }}>
+          {report.sources.map(source => <div key={source.url} className="bg-zinc-950 border border-zinc-800 rounded-lg p-3">
+            <a href={source.url} target="_blank" rel="noreferrer" className="text-xs text-cyan-400">{source.title}</a>
+            <div className="text-[10px] text-zinc-500 mt-1">{source.date}</div>
+            <p className="text-xs text-zinc-400">{source.implication}</p>
+          </div>)}
+        </div>
+        <p className="text-[10px] text-zinc-500">Sources checked 10 September 2026. The recent benchmark papers motivate verification; they do not validate AURA-PCB's models.</p>
+      </section>
     </div>
   );
 };
