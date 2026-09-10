@@ -1,36 +1,3 @@
-import React, { useState, useRef, useEffect } from 'react';
-import type { SchematicComponent, Wire, SchematicData, Pin } from '../types/pcb';
-
-interface SchematicEditorProps {
-  data: SchematicData;
-  selectedComponent: SchematicComponent | null;
-  onSelectComponent: (comp: SchematicComponent | null) => void;
-  onUpdateComponent: (comp: SchematicComponent) => void;
-  onAddWire: (wire: Wire) => void;
-  onDeleteWire: (id: string) => void;
-  simVoltages?: Record<string, number>; // current time-step voltages
-  simCurrents?: Record<string, number>; // current time-step currents
-}
-
-export const SchematicEditor: React.FC<SchematicEditorProps> = ({
-  data,
-  selectedComponent,
-  onSelectComponent,
-  onUpdateComponent,
-  onAddWire,
-  onDeleteWire,
-  simVoltages,
-  simCurrents
-}) => {
-  const [draggedComp, setDraggedComp] = useState<string | null>(null);
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const [wireStart, setWireStart] = useState<{ compId: string; pinId: string; x: number; y: number } | null>(null);
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-  const svgRef = useRef<SVGSVGElement | null>(null);
-
-  // SVG dimensions
-  const width = 800;
-  const height = 550;
 
   // Convert client coordinates to SVG coordinates
   const getSVGCoords = (e: React.MouseEvent) => {
