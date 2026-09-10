@@ -8,7 +8,10 @@ export type ComponentType =
   | 'led'
   | 'transistor_npn'
   | 'opamp'
-  | 'timer555';
+  | 'timer555'
+  | 'mosfet_n'
+  | 'zener'
+  | 'potentiometer';
 
 export interface Pin {
   id: string; // e.g. "1", "2", "out", "in+", "vcc"
@@ -129,3 +132,29 @@ export interface SignalIntegrityReport {
   ringingFrequency?: number; // GHz
   suggestions: string[];
 }
+
+export interface EyeDiagramData {
+  timeOffsetNs: number[]; // time modulo 2*bitPeriod
+  traces: { timeNs: number[]; voltage: number[] }[];
+  bitPeriodNs: number;
+  eyeHeightMv: number;
+  eyeWidthNs: number;
+  jitterPs: number;
+  noiseMarginPercent: number;
+}
+
+export interface FFTSpectrumData {
+  frequenciesHz: number[];
+  magnitudesDb: number[];
+  fundamentalFreqHz: number;
+  peakMagnitudeDb: number;
+  thdPercent: number;
+}
+
+export interface ThermalProbe {
+  id: string;
+  x: number;
+  y: number;
+  tempC: number;
+}
+

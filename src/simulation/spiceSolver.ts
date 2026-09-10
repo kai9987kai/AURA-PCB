@@ -10,12 +10,22 @@ export function parseValue(value: string): number {
 
 export const SIMULATION_LIMITS = { maxSteps: 10000, maxUnknowns: 96, maxWork: 250_000_000 };
 
-function junction(voltage: number, led = false) {
+function junction(voltage: number, led = false, zenerVz = 0) {
   const saturation = led ? 1e-18 : 1e-14;
   const vt = led ? 0.052 : 0.026;
   if (voltage / vt > 60) throw new Error('Junction exceeds the simplified model range. Add current limiting or use a device SPICE model.');
   const exponential = Math.exp(voltage / vt);
-  return { current: saturation * (exponential - 1) + 1e-12 * voltage, conductance: saturation / vt * exponential + 1e-12 };
+  let current = saturation * (exponential - 1) + 1e-12 * voltage;
+  let conductance = saturation / vt * exponential + 1e-12;
+  if (zenerVz > 0 && -voltage > zenerVz) {
+    const vRev = -voltage - zenerVz;
+    const expRev = Math.exp(Math.min(40, vRev / 0.05));
+    const iz = 1e-4 * (expRev - 1) + 0.1 * vRev;
+    const gz = (1e-4 / 0.05) * expRev + 0.1;
+    current -= iz;
+    conductance += gz;
+  }
+  return { current, conductance };
 }
 
 // Simple Gaussian elimination with partial pivoting to solve A * x = B
@@ -102,6 +112,7 @@ export function runSpiceSimulation(
     voltage_source: ['p', 'n'], gnd: ['gnd'], diode: ['a', 'c'], led: ['a', 'c'],
     transistor_npn: ['b', 'c', 'e'], opamp: ['in+', 'in-', 'out', 'v+', 'v-'],
     timer555: ['1', '2', '3', '4', '5', '6', '7', '8'],
+    mosfet_n: ['g', 'd', 's'], zener: ['a', 'c'], potentiometer: ['1', '2', '3'],
   };
   const seenIds = new Set<string>();
   components.forEach(comp => {
@@ -348,7 +359,7 @@ export function runSpiceSimulation(
   const totalMatrixSize = nodeCount + voltBranchCount + 1; // 1-indexed for nodes + voltage branches + ground row (ground is index 0)
   
   // Simulation loop variables
-  const nonlinear = components.some(c => ['diode', 'led', 'transistor_npn', 'opamp', 'timer555'].includes(c.type));
+  const nonlinear = components.some(c => ['diode', 'led', 'transistor_npn', 'opamp', 'timer555', 'mosfet_n', 'zener'].includes(c.type));
   const maxNrIterations = nonlinear ? 100 : 1;
   if (totalMatrixSize > SIMULATION_LIMITS.maxUnknowns || totalMatrixSize ** 3 * maxSteps * maxNrIterations > SIMULATION_LIMITS.maxWork) throw new Error('Circuit and time resolution exceed the interactive computation budget. Simplify the circuit or increase step time.');
   const timepoints: number[] = [];
@@ -543,6 +554,76 @@ export function runSpiceSimulation(
 
           // Minor leakage resistance to collector-base
           stampResistor(A, nc, nb, 1e7);
+        } else if (comp.type === 'zener') {
+          const vd = lastX[node1] - lastX[node2];
+          const vz = parseValue(comp.value) || 5.1; // default 5.1V zener
+          const model = junction(vd, false, vz);
+          stampResistor(A, node1, node2, 1 / model.conductance);
+          stampCurrentSource(B, node1, node2, model.current - model.conductance * vd);
+        } else if (comp.type === 'mosfet_n') {
+          // N-Channel MOSFET: gate (g), drain (d), source (s)
+          const ng = compPinNode(comp.id, 'g');
+          const nd = compPinNode(comp.id, 'd');
+          const ns = compPinNode(comp.id, 's');
+
+          const vth = comp.params.vth || 2.0;
+          const kn = comp.params.kn || 0.05;
+          const lambda = 0.01;
+
+          const vg = lastX[ng] || 0;
+          const vd = lastX[nd] || 0;
+          const vs = lastX[ns] || 0;
+          const vgs = Math.max(-5, Math.min(20, vg - vs));
+          const vds = Math.max(0, vd - vs);
+
+          let ids = 1e-12 * vds;
+          let gm = 0;
+          let gds = 1e-12;
+
+          if (vgs > vth) {
+            const vov = vgs - vth;
+            if (vds < vov) {
+              // Linear / triode region
+              ids = kn * (vov * vds - 0.5 * vds * vds) + 1e-12 * vds;
+              gm = kn * vds;
+              gds = kn * (vov - vds) + 1e-12;
+            } else {
+              // Saturation region
+              ids = 0.5 * kn * vov * vov * (1 + lambda * vds) + 1e-12 * vds;
+              gm = kn * vov * (1 + lambda * vds);
+              gds = 0.5 * kn * vov * vov * lambda + 1e-12;
+            }
+          }
+
+          // Companion source: Ieq = Ids - gm*Vgs - gds*Vds
+          const ieq = ids - gm * vgs - gds * vds;
+
+          // Gate isolation
+          stampResistor(A, ng, ns, 1e8);
+          // Channel conductance
+          stampResistor(A, nd, ns, 1 / Math.max(1e-12, gds));
+
+          // Transconductance gm: current from D to S controlled by (Vg - Vs)
+          if (nd > 0) {
+            A[nd][ng] += gm;
+            A[nd][ns] -= gm;
+          }
+          if (ns > 0) {
+            A[ns][ng] -= gm;
+            A[ns][ns] += gm;
+          }
+          stampCurrentSource(B, nd, ns, ieq);
+        } else if (comp.type === 'potentiometer') {
+          // Pins: 1, 2 (wiper), 3
+          const n1 = compPinNode(comp.id, '1');
+          const n2 = compPinNode(comp.id, '2');
+          const n3 = compPinNode(comp.id, '3');
+          const rTotal = Math.max(1, parseValue(comp.value) || 10000);
+          const pos = Math.max(0.01, Math.min(0.99, (comp.params.position ?? 50) / 100));
+          const r12 = Math.max(0.1, rTotal * pos);
+          const r23 = Math.max(0.1, rTotal * (1 - pos));
+          stampResistor(A, n1, n2, r12);
+          stampResistor(A, n2, n3, r23);
         }
       });
 
@@ -598,7 +679,7 @@ export function runSpiceSimulation(
       // Limit junction voltage changes, rather than clamp the final device model.
       let damping = 1;
       components.forEach(comp => {
-        const pins = comp.type === 'diode' || comp.type === 'led' ? ['a', 'c'] : comp.type === 'transistor_npn' ? ['b', 'e'] : null;
+        const pins = comp.type === 'diode' || comp.type === 'led' || comp.type === 'zener' ? ['a', 'c'] : comp.type === 'transistor_npn' ? ['b', 'e'] : comp.type === 'mosfet_n' ? ['g', 's'] : null;
         if (!pins) return;
         const p = compPinNode(comp.id, pins[0]);
         const n = compPinNode(comp.id, pins[1]);
@@ -678,6 +759,29 @@ export function runSpiceSimulation(
         if (tmr) {
           current = xVector[tmr.outBranchIdx] || 0;
         }
+      } else if (comp.type === 'zener') {
+        const vz = parseValue(comp.value) || 5.1;
+        current = junction(vDiff, false, vz).current;
+      } else if (comp.type === 'mosfet_n') {
+        const ng = compPinNode(comp.id, 'g');
+        const nd = compPinNode(comp.id, 'd');
+        const ns = compPinNode(comp.id, 's');
+        const vth = comp.params.vth || 2.0;
+        const kn = comp.params.kn || 0.05;
+        const vgs = Math.max(-5, Math.min(20, (xVector[ng] || 0) - (xVector[ns] || 0)));
+        const vds = Math.max(0, (xVector[nd] || 0) - (xVector[ns] || 0));
+        if (vgs > vth) {
+          const vov = vgs - vth;
+          current = vds < vov ? kn * (vov * vds - 0.5 * vds * vds) : 0.5 * kn * vov * vov * (1 + 0.01 * vds);
+        } else {
+          current = 1e-12 * vds;
+        }
+      } else if (comp.type === 'potentiometer') {
+        const n1 = compPinNode(comp.id, '1');
+        const n2 = compPinNode(comp.id, '2');
+        const rTotal = Math.max(1, parseValue(comp.value) || 10000);
+        const pos = Math.max(0.01, Math.min(0.99, (comp.params.position ?? 50) / 100));
+        current = ((xVector[n1] || 0) - (xVector[n2] || 0)) / Math.max(0.1, rTotal * pos);
       }
 
       currentHistory[comp.id].push(current);
@@ -685,13 +789,28 @@ export function runSpiceSimulation(
       // Ideal reactive parts and sources have no modeled heat loss. Behavioral IC
       // internal losses are unknown; zero here does not certify zero real heating.
       let power = 0;
-      if (comp.type === 'resistor' || comp.type === 'diode' || comp.type === 'led') power = Math.max(0, vDiff * current);
+      if (comp.type === 'resistor' || comp.type === 'diode' || comp.type === 'led' || comp.type === 'zener') power = Math.max(0, vDiff * current);
       if (comp.type === 'transistor_npn') {
         const vb = xVector[compPinNode(comp.id, 'b')];
         const vc = xVector[compPinNode(comp.id, 'c')];
         const ve = xVector[compPinNode(comp.id, 'e')];
         const ib = junction(vb - ve).current + (vb - vc) / 1e7;
         power = Math.max(0, (vc - ve) * current + (vb - ve) * ib);
+      }
+      if (comp.type === 'mosfet_n') {
+        const nd = compPinNode(comp.id, 'd');
+        const ns = compPinNode(comp.id, 's');
+        power = Math.max(0, ((xVector[nd] || 0) - (xVector[ns] || 0)) * current);
+      }
+      if (comp.type === 'potentiometer') {
+        const n1 = compPinNode(comp.id, '1');
+        const n2 = compPinNode(comp.id, '2');
+        const n3 = compPinNode(comp.id, '3');
+        const rTotal = Math.max(1, parseValue(comp.value) || 10000);
+        const pos = Math.max(0.01, Math.min(0.99, (comp.params.position ?? 50) / 100));
+        const v12 = (xVector[n1] || 0) - (xVector[n2] || 0);
+        const v23 = (xVector[n2] || 0) - (xVector[n3] || 0);
+        power = Math.max(0, (v12 * v12) / Math.max(0.1, rTotal * pos) + (v23 * v23) / Math.max(0.1, rTotal * (1 - pos)));
       }
       if (!Number.isFinite(current) || !Number.isFinite(power)) throw new Error(`${comp.id} produced non-finite current or power.`);
       instPower[comp.id].push(power * dt);

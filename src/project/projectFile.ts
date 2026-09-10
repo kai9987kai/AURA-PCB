@@ -5,7 +5,7 @@ export interface Project { name: string; schematic: SchematicData; pcbLayout: PC
 export const MAX_FILE_BYTES = 2_000_000;
 export const STORAGE_KEY = 'aura-pcb.project.v1';
 export const emptyProject = (): Project => ({ name: 'Untitled board', schematic: { components: [], wires: [] }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints: [], traces: [], vias: [] } });
-const types = new Set<ComponentType>(['resistor', 'capacitor', 'inductor', 'voltage_source', 'gnd', 'diode', 'led', 'transistor_npn', 'opamp', 'timer555']);
+const types = new Set<ComponentType>(['resistor', 'capacitor', 'inductor', 'voltage_source', 'gnd', 'diode', 'led', 'transistor_npn', 'opamp', 'timer555', 'mosfet_n', 'zener', 'potentiometer']);
 const fail = (field: string): never => { throw new Error(`Invalid project: ${field}.`); };
 const object = (v: unknown, field: string): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : fail(field);
 const text = (v: unknown, field: string, max = 120): string => typeof v === 'string' && v.length <= max ? v : fail(field);

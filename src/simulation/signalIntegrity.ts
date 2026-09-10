@@ -182,3 +182,172 @@ export function simulateReflections(
   }
   return { time, voltage };
 }
+
+/**
+ * Binary search to synthesize the required trace width (in mm) for a target characteristic impedance Z0.
+ */
+export function synthesizeTraceWidth(
+  targetZ0: number,
+  substrateHeightMm = 1.6,
+  dielectricConstant = 4.5,
+  copperThicknessUm = 35
+): number {
+  if (!Number.isFinite(targetZ0) || targetZ0 <= 10 || targetZ0 >= 250) {
+    throw new Error('Target impedance must be between 10 and 250 ohms.');
+  }
+
+  let lowW = 0.05;
+  let highW = 20.0;
+  let bestW = 0.4;
+
+  for (let iter = 0; iter < 30; iter++) {
+    const midW = (lowW + highW) / 2;
+    const { impedance } = microstrip(midW, substrateHeightMm, dielectricConstant, copperThicknessUm / 1000);
+
+    if (Math.abs(impedance - targetZ0) < 0.05) {
+      return Math.round(midW * 100) / 100;
+    }
+
+    // Microstrip impedance decreases as width increases
+    if (impedance > targetZ0) {
+      lowW = midW; // Need wider trace to lower Z0
+    } else {
+      highW = midW; // Need narrower trace to increase Z0
+    }
+    bestW = midW;
+  }
+
+  return Math.round(bestW * 100) / 100;
+}
+
+/**
+ * Simulate an Eye Diagram using a PRBS-7 sequence through the transmission line model.
+ */
+export function simulateEyeDiagram(
+  report: SignalIntegrityReport & Partial<SIAnalysis>,
+  bitRateGbps = 1.0,
+  numBits = 127
+): {
+  timeOffsetNs: number[];
+  traces: { timeNs: number[]; voltage: number[] }[];
+  bitPeriodNs: number;
+  eyeHeightMv: number;
+  eyeWidthNs: number;
+  jitterPs: number;
+  noiseMarginPercent: number;
+} {
+  const bitPeriodNs = 1.0 / Math.max(0.01, Math.min(10.0, bitRateGbps));
+  const samplesPerBit = 24;
+  const dt = bitPeriodNs / samplesPerBit;
+
+  // Generate PRBS-7 pattern: x^7 + x^6 + 1
+  let lfsr = 0x7f;
+  const bits: number[] = [];
+  for (let i = 0; i < numBits; i++) {
+    const nextBit = ((lfsr >> 6) ^ (lfsr >> 5)) & 1;
+    lfsr = ((lfsr << 1) | nextBit) & 0x7f;
+    bits.push(nextBit);
+  }
+
+  // Pre-calculate step response
+  const totalSamples = bits.length * samplesPerBit;
+  const td = report.propagationDelay || 0;
+  const source = report.sourceImpedance ?? 50;
+  const load = report.loadImpedance ?? 10000;
+  const swing = report.signalSwingV ?? 3.3;
+  const initial = swing * report.impedance / (source + report.impedance);
+  const product = (report.reflectionCoefficientSource || 0) * (report.reflectionCoefficientLoad || 0);
+  const tau = (report.riseTimeNs ?? 0.5) / Math.log(9);
+
+  // Compute full continuous voltage waveform with digital driver transitions
+  const fullVoltages = new Float64Array(totalSamples);
+  let stateVolt = 0;
+
+  for (let s = 0; s < totalSamples; s++) {
+    const bitIndex = Math.floor(s / samplesPerBit);
+    const targetDrive = bits[bitIndex] * swing;
+
+    // Reflection bounce series
+    const tInBit = (s % samplesPerBit) * dt;
+    let driveReflected = targetDrive;
+    if (td > 0 && tInBit >= td) {
+      const arrivals = Math.min(5, Math.floor((tInBit - td) / (2 * td)) + 1);
+      const sum = product === 1 ? arrivals : (1 - product ** arrivals) / (1 - product);
+      driveReflected = (initial * (1 + (report.reflectionCoefficientLoad || 0)) * sum / swing) * targetDrive;
+    }
+
+    // Filter by driver bandwidth / rise time
+    stateVolt += -Math.expm1(-dt / Math.max(1e-4, tau)) * (driveReflected - stateVolt);
+    fullVoltages[s] = stateVolt;
+  }
+
+  // Fold waveform into eye segments of duration 2 * bitPeriodNs
+  const segmentSamples = 2 * samplesPerBit;
+  const numSegments = Math.floor((totalSamples - samplesPerBit) / samplesPerBit);
+  const eyeTraces: { timeNs: number[]; voltage: number[] }[] = [];
+  const timeOffsetNs: number[] = Array.from({ length: segmentSamples }, (_, i) => i * dt);
+
+  const centerSample = Math.floor(segmentSamples / 2);
+  const highSamples: number[] = [];
+  const lowSamples: number[] = [];
+  const thresholdCrossings: number[] = [];
+  const midThreshold = swing / 2;
+
+  for (let seg = 1; seg < numSegments - 1; seg++) {
+    const start = seg * samplesPerBit;
+    const traceVolts: number[] = [];
+
+    for (let k = 0; k < segmentSamples; k++) {
+      const v = fullVoltages[start + k];
+      traceVolts.push(v);
+
+      // Check threshold crossing for jitter
+      if (k > 0) {
+        const vPrev = fullVoltages[start + k - 1];
+        if ((vPrev < midThreshold && v >= midThreshold) || (vPrev > midThreshold && v <= midThreshold)) {
+          const crossT = (k - 1) * dt + ((midThreshold - vPrev) / (v - vPrev)) * dt;
+          thresholdCrossings.push(crossT);
+        }
+      }
+    }
+
+    eyeTraces.push({ timeNs: timeOffsetNs, voltage: traceVolts });
+
+    const centerV = traceVolts[centerSample];
+    if (centerV > midThreshold) {
+      highSamples.push(centerV);
+    } else {
+      lowSamples.push(centerV);
+    }
+  }
+
+  // Eye measurements
+  const v1Min = highSamples.length > 0 ? Math.min(...highSamples) : swing * 0.9;
+  const v0Max = lowSamples.length > 0 ? Math.max(...lowSamples) : swing * 0.1;
+  const eyeHeightMv = Math.max(0, Math.round((v1Min - v0Max) * 1000));
+
+  // Timing jitter from crossing spread
+  let jitterPs = 15;
+  if (thresholdCrossings.length > 4) {
+    const midCrossings = thresholdCrossings.filter(t => Math.abs(t - bitPeriodNs / 2) < bitPeriodNs * 0.4);
+    if (midCrossings.length > 1) {
+      const mean = midCrossings.reduce((sum, v) => sum + v, 0) / midCrossings.length;
+      const variance = midCrossings.reduce((sum, v) => sum + (v - mean) ** 2, 0) / midCrossings.length;
+      jitterPs = Math.round(Math.sqrt(variance) * 1000);
+    }
+  }
+
+  const eyeWidthNs = Math.max(0, Math.round((bitPeriodNs - (jitterPs / 1000) * 2) * 1000) / 1000);
+  const noiseMarginPercent = Math.max(0, Math.min(100, Math.round((eyeHeightMv / (swing * 1000)) * 100)));
+
+  return {
+    timeOffsetNs,
+    traces: eyeTraces.slice(0, 48), // Keep reasonable trace density for crisp rendering
+    bitPeriodNs,
+    eyeHeightMv,
+    eyeWidthNs,
+    jitterPs,
+    noiseMarginPercent,
+  };
+}
+
