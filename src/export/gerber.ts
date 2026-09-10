@@ -143,3 +143,146 @@ export function buildGerberLayers(layout: PCBLayoutData): GerberLayer[] {
     ['outline', 'Profile,NP', profile],
   ] as const).map(([id, fileFunction, geometry]) => ({ id, fileFunction, contents: emitLayer(fileFunction, geometry) }));
 }
+
+/**
+ * Generate standard Excellon NC Drill file (metric, leading zeros omitted).
+ */
+export function buildExcellonDrill(layout: PCBLayoutData): string {
+  const flip = toGerberPoint(layout.boardHeight);
+  interface DrillHit {
+    x: number;
+    y: number;
+    diameter: number;
+  }
+
+  const hits: DrillHit[] = [];
+
+  // Vias
+  layout.vias.forEach(v => {
+    if (v.drillDiameter > 0) {
+      const pt = flip({ x: v.x, y: v.y });
+      hits.push({ x: pt.x, y: pt.y, diameter: v.drillDiameter });
+    }
+  });
+
+  // Through-hole pads
+  layout.footprints.forEach(fp => {
+    fp.pads.forEach(pad => {
+      if (pad.holeDiameter > 0) {
+        const pt = flip(getPadBoardCoords(fp, pad));
+        hits.push({ x: pt.x, y: pt.y, diameter: pad.holeDiameter });
+      }
+    });
+  });
+
+  // Group by unique drill diameters snapped to 0.01mm
+  const toolMap = new Map<number, DrillHit[]>();
+  hits.forEach(hit => {
+    const key = Math.round(hit.diameter * 100) / 100;
+    if (!toolMap.has(key)) toolMap.set(key, []);
+    toolMap.get(key)!.push(hit);
+  });
+
+  const sortedSizes = Array.from(toolMap.keys()).sort((a, b) => a - b);
+  const toolDefs: string[] = [];
+  const body: string[] = [];
+
+  sortedSizes.forEach((diam, idx) => {
+    const toolNum = idx + 1;
+    const toolCode = `T${toolNum.toString().padStart(2, '0')}`;
+    toolDefs.push(`${toolCode}C${diam.toFixed(3)}`);
+
+    body.push(toolCode);
+    const toolHits = toolMap.get(diam)!;
+    toolHits.forEach(h => {
+      // Excellon coordinate in 3.3 decimal format
+      const xStr = (Math.round(h.x * 1000) / 1000).toFixed(3);
+      const yStr = (Math.round(h.y * 1000) / 1000).toFixed(3);
+      body.push(`X${xStr}Y${yStr}`);
+    });
+  });
+
+  return [
+    'M48',
+    '; DRILL file created by AURA-PCB',
+    '; FORMAT: METRIC, trailing zeros explicit, 3:3 format',
+    'METRIC,LZ',
+    ...toolDefs,
+    '%',
+    'G05',
+    'G90',
+    ...body,
+    'M30',
+    '',
+  ].join('\n');
+}
+
+/**
+ * Generate SMT Pick-and-Place (Centroid) CSV file.
+ */
+export function buildCentroidCsv(layout: PCBLayoutData): string {
+  const lines = [
+    'Designator,Val,Package,MidX(mm),MidY(mm),Rotation,Layer',
+  ];
+
+  layout.footprints.forEach(fp => {
+    const layer = 'Top';
+    const pkg = `${fp.type}_${fp.width}x${fp.height}`;
+    lines.push(
+      `"${fp.id}","${fp.type}","${pkg}",${fp.x.toFixed(3)},${fp.y.toFixed(3)},${fp.rotation},"${layer}"`
+    );
+  });
+
+  return lines.join('\r\n');
+}
+
+export interface FabricationFile {
+  filename: string;
+  contents: string;
+  type: string;
+  description: string;
+}
+
+/**
+ * Build all manufacturing files for one-click downloading or layer inspection.
+ */
+export function buildFabricationPackage(layout: PCBLayoutData, projectName: string): FabricationFile[] {
+  const cleanName = projectName.replace(/[^\w-]+/g, '-').replace(/^-|-$/g, '') || 'aura-board';
+  const gerbers = buildGerberLayers(layout);
+
+  const extMap: Record<GerberLayerId, { ext: string; desc: string }> = {
+    topCopper: { ext: 'GTL', desc: 'Top Copper Layer (L1)' },
+    bottomCopper: { ext: 'GBL', desc: 'Bottom Copper Layer (L2)' },
+    topMask: { ext: 'GTS', desc: 'Top Soldermask' },
+    bottomMask: { ext: 'GBS', desc: 'Bottom Soldermask' },
+    topSilk: { ext: 'GTO', desc: 'Top Silkscreen / Legend' },
+    topPaste: { ext: 'GTP', desc: 'Top Solder Paste Stencil' },
+    outline: { ext: 'GKO', desc: 'Board Outline / Edge Profile' },
+  };
+
+  const files: FabricationFile[] = gerbers.map(g => ({
+    filename: `${cleanName}.${extMap[g.id].ext}`,
+    contents: g.contents,
+    type: 'text/plain',
+    description: extMap[g.id].desc,
+  }));
+
+  // Append Excellon drill file
+  files.push({
+    filename: `${cleanName}.DRL`,
+    contents: buildExcellonDrill(layout),
+    type: 'text/plain',
+    description: 'Excellon NC Drill File (Plated & Vias)',
+  });
+
+  // Append Centroid SMT placement
+  files.push({
+    filename: `${cleanName}-Centroid.csv`,
+    contents: buildCentroidCsv(layout),
+    type: 'text/csv',
+    description: 'Pick and Place SMT Centroid Coordinates',
+  });
+
+  return files;
+}
+
