@@ -25,8 +25,13 @@ export function createThermalGrid(
   };
 }
 
-// Compute the thermal conductivity matrix based on copper traces and components
-// Copper conductivity: ~390 W/m*K, FR4: ~0.3 W/m*K
+// Compute the thermal conductivity matrix from the copper on the board: pours, traces and pads.
+// Copper conductivity: ~390 W/m*K, FR4: ~0.3 W/m*K.
+//
+// Like the rest of this 2D model, a cell is either copper or substrate through the whole board
+// thickness, so a 35um plane conducts as if it were 1.6mm of solid copper. That overstates
+// spreading in absolute terms; it is kept because traces are already modelled the same way, and
+// the display is a relative picture of where heat goes rather than a junction temperature.
 export function computeConductivityGrid(
   layout: PCBLayoutData,
   widthCells: number,
@@ -47,6 +52,23 @@ export function computeConductivityGrid(
     t = Math.max(0, Math.min(1, t));
     return Math.sqrt((px - (x1 + t * (x2 - x1))) ** 2 + (py - (y1 + t * (y2 - y1))) ** 2);
   };
+
+  // 0. A pour is by far the largest piece of copper on the board, and the dominant heat
+  //    spreader when one exists. Stamping it first lets traces and pads only reinforce it.
+  //    Clearance rings around foreign nets are ignored: they are far below one cell wide.
+  for (const pour of layout.pours ?? []) {
+    if (!(pour.margin >= 0) || !(pour.clearance > 0)) continue;
+    for (let row = 0; row < heightCells; row++) {
+      for (let col = 0; col < widthCells; col++) {
+        const x = (col + 0.5) * cellSizeMm;
+        const y = (row + 0.5) * cellSizeMm;
+        if (x >= pour.margin && x <= layout.boardWidth - pour.margin &&
+            y >= pour.margin && y <= layout.boardHeight - pour.margin) {
+          conductivity[row * widthCells + col] = 390.0;
+        }
+      }
+    }
+  }
 
   // 1. Stamp copper traces with high conductivity
   layout.traces.forEach(trace => {
@@ -129,29 +151,38 @@ export function solveThermalStep(
     const srcRow = Math.floor(src.y / cellSizeMm);
     const radCells = Math.ceil(src.radius / cellSizeMm);
 
-    // Distribute component heat dissipation over its radius area
+    // Find the cells the component covers before handing out any power. Scaling each cell by
+    // the ratio of cell area to disc area instead loses whatever the square grid fails to tile
+    // (about 10% for a small part), and a board cannot shed power that was never put into it.
+    const covered: number[] = [];
     for (let r = -radCells; r <= radCells; r++) {
       for (let c = -radCells; c <= radCells; c++) {
         const curCol = srcCol + c;
         const curRow = srcRow + r;
-        if (curCol >= 0 && curCol < widthCells && curRow >= 0 && curRow < heightCells) {
-          const dist = Math.sqrt(r * r + c * c) * cellSizeMm;
-          if (dist <= src.radius) {
-            const idx = curRow * widthCells + curCol;
-            // Distribute heat evenly or with Gaussian profile
-            const areaFactor = Math.PI * (src.radius / 1000) ** 2;
-            const powerPerCell = src.power * (dx2 / Math.max(dx2, areaFactor));
-            Q[idx] += powerPerCell;
-          }
+        if (curCol >= 0 && curCol < widthCells && curRow >= 0 && curRow < heightCells &&
+            Math.sqrt(r * r + c * c) * cellSizeMm <= src.radius) {
+          covered.push(curRow * widthCells + curCol);
         }
       }
     }
+    // A part smaller than one cell, or sitting off the board, still has to put its heat
+    // somewhere; the nearest in-bounds cell takes all of it.
+    if (!covered.length) {
+      const col = Math.max(0, Math.min(widthCells - 1, srcCol));
+      const row = Math.max(0, Math.min(heightCells - 1, srcRow));
+      covered.push(row * widthCells + col);
+    }
+    for (const idx of covered) Q[idx] += src.power / covered.length;
   });
 
   let T_old = new Float32Array(temperatures);
   let T_new = new Float32Array(size);
 
-  const hc_dx2 = convectionCoeff * dx2;
+  // Convection leaves through both faces. Per unit volume that is 2h/dz, so it has to be
+  // scaled by the thickness exactly like the source term is. Without the division the sink is
+  // some five orders of magnitude weaker than conduction, and the board never reaches a steady
+  // state at all: its temperature just climbs with the number of iterations run.
+  const hc_dx2 = 2 * convectionCoeff * dx2 / thickness;
 
   for (let iter = 0; iter < iterations; iter++) {
     for (let r = 0; r < heightCells; r++) {

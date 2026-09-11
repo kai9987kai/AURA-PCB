@@ -13,6 +13,7 @@ AURA PCB is a research-grade, browser-based EDA (Electronic Design Automation) a
 ### 2. 2D PCB Layout Editor
 - **Manual & Auto-routing**: Route copper traces manually with automatic multi-segment snapping and via placement, or utilize **Lee's Grid Autorouter** (BFS pathfinder on a 1mm routing grid).
 - **Ratsnest Airwires**: Visualizes missing connections to guide trace layout.
+- **Copper Pours**: Flood either layer with a ground plane. The pour is a real board object, not a preview: it joins same-net copper that falls inside it, so a ground net can be completed by a plane instead of traces, and it is written into the Gerber as a filled region with every other net cleared out of it in negative polarity.
 - **Real-Time DRC (Design Rule Checker)**: Flags trace width clearance (min 0.20mm) and overlap errors (min 0.25mm spacing) with red target rings.
 
 ### 3. SPICE Simulation Engine
@@ -37,7 +38,14 @@ AURA PCB is a research-grade, browser-based EDA (Electronic Design Automation) a
 - **3D Component Packages**: Renders resistors with color bands, electrolytic capacitor cans, colored translucent LEDs, DO-35 diodes, DIP-8 IC chips, and TO-92 transistors.
 - **Thermal Dissipation Pillars**: Visualizes component temperature rise as translucent glowing vertical energy cylinders.
 
-### 7. Research Lab Panel
+### 7. Manufacturing & Interchange Output
+- **Gerber RS-274X (X2)**: Two copper layers, soldermask, legend, paste and board outline, in 4.6 absolute millimetre format with layer function attributes.
+- **Excellon Drill**: Metric, explicit decimals, one tool per distinct diameter.
+- **Pick-and-place Centroid**: Surface-mount parts only, in the same coordinate frame as the copper.
+- **SPICE Netlist**: Exports the captured circuit as a deck whose values follow the built-in solver, and reports every device that could not be translated exactly rather than emitting a card that merely looks right.
+- Every package ships a notes file stating what it does and does not cover. None of it is a design rule check; review it in a CAM viewer before ordering.
+
+### 8. Research Lab Panel
 - **DFM / Manufacturing Analysis**: Reports copper density, board occupancy, trace counts, via drill statistics, and total power metrics.
 - **Optimization Queue**: Provides high-priority action items (P0/P1/P2 recommendations) for routing completion, impedance matching, DRC fixes, and thermal mitigation.
 
@@ -48,25 +56,38 @@ AURA PCB is a research-grade, browser-based EDA (Electronic Design Automation) a
 ```
 src/
 ├── analysis/
-│   └── pcbResearch.ts        # Research lab report builder & DRC compiler
+│   ├── boardChecks.ts          # Geometry, clearance, pour and net connectivity analysis
+│   └── pcbResearch.ts          # Research lab report builder & DRC compiler
 ├── components/
-│   ├── LayoutEditor.tsx       # 2D layout editor, DRC visualizer, & Lee's autorouter
-│   ├── ResearchPanel.tsx      # Manufacturing snapshot & optimization recommendations
-│   ├── SchematicEditor.tsx    # SVG schematic editor with animated current/voltage glow
-│   ├── Sidebar.tsx           # Part library search, parameters editor, preset selector
+│   ├── GerberViewerModal.tsx   # Fabrication package preview & per-layer download
+│   ├── LayoutEditor.tsx        # 2D layout editor, DRC visualizer, pours, Lee's autorouter
+│   ├── ProjectToolbar.tsx      # New/open/save, BOM, SPICE and fabrication exports
+│   ├── ResearchPanel.tsx       # Manufacturing snapshot & optimization recommendations
+│   ├── SchematicEditor.tsx     # SVG schematic editor with animated current/voltage glow
+│   ├── Sidebar.tsx             # Part library search, parameters editor, preset selector
 │   ├── SignalIntegrityPanel.tsx# Transmission line scope & impedance recommendations
-│   ├── SimulationPanel.tsx    # Scope transient plotting & SPICE settings
-│   ├── ThermalPanel.tsx       # 2D heat equation canvas scanner & parameter inputs
-│   └── ThreeDPCBViewer.tsx    # Three.js 3D board scene & geometry assembler
+│   ├── SimulationPanel.tsx     # Scope transient plotting & SPICE settings
+│   ├── ThermalPanel.tsx        # 2D heat equation canvas scanner & parameter inputs
+│   └── ThreeDPCBViewer.tsx     # Three.js 3D board scene & geometry assembler
+├── export/
+│   └── gerber.ts               # RS-274X, Excellon drill, centroid & package notes
+├── interchange/
+│   └── spiceNetlist.ts         # SPICE deck export with explicit translation caveats
+├── project/
+│   ├── connectivity.ts         # Union-find net naming & copper reconciliation
+│   ├── history.ts              # Undo/redo reducer with edit coalescing
+│   ├── projectFile.ts          # Bounded, validated project document & BOM export
+│   └── useProject.ts           # Autosave, local recovery and commit hooks
 ├── simulation/
-│   ├── signalIntegrity.ts     # Characteristic impedance & ringing simulations
-│   ├── spiceSolver.ts         # Modified Nodal Analysis (MNA) matrix solver
-│   └── thermalSolver.ts       # Finite-difference Jacobi relaxation thermal solver
+│   ├── fft.ts                  # Spectral transform for the scope
+│   ├── signalIntegrity.ts      # Characteristic impedance & ringing simulations
+│   ├── spiceSolver.ts          # Modified Nodal Analysis (MNA) matrix solver
+│   └── thermalSolver.ts        # Finite-difference Jacobi relaxation thermal solver
 ├── types/
-│   └── pcb.ts                 # Shared Type Definitions
-├── App.tsx                    # Main app state manager and tab navigation layout
-├── index.css                  # Custom styling variables, custom scrollbars, animations
-└── main.tsx                   # React root launcher
+│   └── pcb.ts                  # Shared Type Definitions
+├── App.tsx                     # Main app state manager and tab navigation layout
+├── index.css                   # Custom styling variables, custom scrollbars, animations
+└── main.tsx                    # React root launcher
 ```
 
 ---
@@ -108,12 +129,17 @@ $$v^{(k+1)} = v^{(k)} - J(v^{(k)})^{-1} \cdot f(v^{(k)})$$
 
 ### B. Thermal Diffusion (Jacobi Relaxation)
 The heat solver utilizes a discrete 2D grid overlay ($1.5\text{mm}$ cells) and calculates heat conduction between cells based on adjacent interfaces:
-$$T_{c,r}^{(new)} = \frac{k_r T_{r} + k_l T_{l} + k_u T_{u} + k_d T_{d} + \frac{Q_{c,r}}{d_z} + h_c dx^2 T_{amb}}{k_r + k_l + k_u + k_d + h_c dx^2}$$
+$$T_{c,r}^{(new)} = \frac{k_r T_{r} + k_l T_{l} + k_u T_{u} + k_d T_{d} + \frac{Q_{c,r}}{d_z} + \frac{2 h_c dx^2}{d_z} T_{amb}}{k_r + k_l + k_u + k_d + \frac{2 h_c dx^2}{d_z}}$$
 Where:
-- $k$ is interface thermal conductivity (derived from trace copper presence).
+- $k$ is interface thermal conductivity, taken from the copper in each cell: pours first, then traces and pads.
 - $Q$ is heat input generated by component power dissipation.
-- $h_c$ is natural air convection coefficient.
+- $h_c$ is the natural air convection coefficient, applied to both faces and expressed per unit volume as $2h_c/d_z$ so that it scales like the source term. A surface coefficient used directly here is roughly three orders of magnitude weaker than conduction, which leaves the board with no effective heat sink at all.
 - $d_z$ is the board thickness ($1.6\text{mm}$).
+
+At steady state every watt leaves through the two faces, so the mean temperature rise is
+$\Delta T = P / (2 h_c A)$ regardless of how the copper is arranged. Copper changes the
+gradient, not the balance: the regression suite checks the settled mean against that figure for
+bare substrate and for a fully poured board, and checks that the pour flattens the hot spot.
 
 ### C. Transmission Line Stackup
 Characteristic impedance ($Z_0$) is derived from the copper width ($w$), trace thickness ($t$), substrate height ($h$), and effective dielectric constant ($\epsilon_{eff}$).

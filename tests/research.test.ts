@@ -5,13 +5,13 @@ import type { PCBLayoutData, SchematicData, SimResult } from '../src/types/pcb.t
 
 function fixture(net = 'GND'): { schematic: SchematicData; layout: PCBLayoutData; simulation: SimResult } {
   const schematic: SchematicData = { components: ['R1', 'R2'].map(id => ({ id, type: 'resistor', name: id, value: '1k', x: 0, y: 0, rotation: 0, pins: [{ id: '1', label: '1', relX: 0, relY: 0, net }], params: {} })), wires: [] };
-  const layout: PCBLayoutData = { boardWidth: 50, boardHeight: 30, footprints: schematic.components.map((component, index) => ({ id: component.id, componentId: component.id, type: component.type, x: 10 + 20 * index, y: 10, rotation: 0, width: 2, height: 2, isPlaced: true, pads: [{ id: '1', relX: 0, relY: 0, diameter: 1.2, holeDiameter: 0.6, net }] })), traces: [], vias: [] };
+  const layout: PCBLayoutData = { boardWidth: 50, boardHeight: 30, footprints: schematic.components.map((component, index) => ({ id: component.id, componentId: component.id, type: component.type, x: 10 + 20 * index, y: 10, rotation: 0, width: 2, height: 2, isPlaced: true, pads: [{ id: '1', relX: 0, relY: 0, diameter: 1.2, holeDiameter: 0.6, net }] })), traces: [], vias: [], pours: [] };
   const simulation: SimResult = { timepoints: [0], nodes: ['GND'], voltages: { GND: [0] }, currents: { R1: [0], R2: [0] }, powerDissipation: { R1: 0, R2: 0 } };
   return { schematic, layout, simulation };
 }
 
 test('empty report cannot appear ready or fabricate thermal evidence', () => {
-  const report = buildResearchReport({ components: [], wires: [] }, { boardWidth: 50, boardHeight: 30, footprints: [], traces: [], vias: [] }, null, []);
+  const report = buildResearchReport({ components: [], wires: [] }, { boardWidth: 50, boardHeight: 30, footprints: [], traces: [], vias: [], pours: [] }, null, []);
   assert.equal(report.status, 'empty');
   assert.equal(report.overallScore, 0);
   assert.equal(report.simulationAvailable, false);

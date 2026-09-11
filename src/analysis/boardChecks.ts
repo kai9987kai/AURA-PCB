@@ -118,8 +118,8 @@ class DisjointSet {
 
 /**
  * Two-layer circular-pad model: SMD pads are top-only; drilled pads and vias
- * are plated through. Decorative pour previews never supply connectivity.
- * Invalid objects are reported and excluded from connectivity.
+ * are plated through. A copper pour does supply connectivity, to same-net copper on its
+ * own layer that falls inside it. Invalid objects are reported and excluded from connectivity.
  */
 export function analyzeBoard(layout: PCBLayoutData): BoardAnalysis {
   const issues: BoardIssue[] = [];
@@ -220,6 +220,41 @@ export function analyzeBoard(layout: PCBLayoutData): BoardAnalysis {
       }
     }
   }
+
+  // A flood is not clipped around foreign copper, it is cleared away from it, so the only
+  // electrical question it raises is which same-net copper it swallows. That copper forms one
+  // group whether or not a trace was ever drawn between the pieces.
+  // Documents written before pours existed carry no list at all.
+  (layout.pours ?? []).forEach((pour, index) => {
+    const pourId = `pour:${index}`;
+    const pourNet = knownNet(pour.net);
+    const label = `Pour ${pour.id} (${pourNet ?? 'unassigned'})`;
+    if (!validBoard || !Number.isFinite(pour.margin) || pour.margin < 0 ||
+        !Number.isFinite(pour.clearance) || pour.clearance <= 0 || !pourNet) {
+      add('invalid', pourId, `Invalid pour geometry: ${label}`);
+      return;
+    }
+    if (pour.margin < BOARD_RULES.edgeClearance - EPSILON) {
+      add('edge', pourId, `Board edge violation: ${label} margin ${pour.margin.toFixed(2)}mm is below ${BOARD_RULES.edgeClearance.toFixed(2)}mm`, undefined, [pour.id]);
+    }
+    const region = {
+      x0: pour.margin, y0: pour.margin,
+      x1: layout.boardWidth - pour.margin, y1: layout.boardHeight - pour.margin,
+    };
+    if (region.x1 - region.x0 <= EPSILON || region.y1 - region.y0 <= EPSILON) {
+      add('invalid', pourId, `Invalid pour geometry: ${label} margin leaves no copper`);
+      return;
+    }
+    const side = pour.layer === 'top' ? 1 : 2;
+    const swallowed = copper.flatMap((item, i) => item.net === pourNet && (item.layers & side) !== 0 &&
+      item.points.some(p => p.x >= region.x0 && p.x <= region.x1 && p.y >= region.y0 && p.y <= region.y1)
+      ? [i] : []);
+    if (!swallowed.length) {
+      add('unrouted', pourId, `Floating pour ${pour.id}: no ${pourNet} copper lies inside the ${pour.layer} flood, so it is isolated copper`);
+      return;
+    }
+    for (const i of swallowed.slice(1)) connected.join(swallowed[0], i);
+  });
 
   // Retain invalid terminals in the denominator so bad geometry cannot make
   // a previously incomplete net appear completely routed.

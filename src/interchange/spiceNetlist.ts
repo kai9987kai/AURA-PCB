@@ -8,7 +8,7 @@ export interface SpiceExport {
   caveats: string[];
 }
 
-const EMPTY_LAYOUT = { boardWidth: 0, boardHeight: 0, footprints: [], traces: [], vias: [] };
+const EMPTY_LAYOUT = { boardWidth: 0, boardHeight: 0, footprints: [], traces: [], vias: [], pours: [] };
 const GROUND_NODE = '0';
 
 /** SPICE identifiers are far narrower than this project's net and reference names. */

@@ -87,12 +87,28 @@ export interface PCBVia {
   drillDiameter: number;
 }
 
+/**
+ * A copper flood tied to one net, covering the board outline inset by `margin`.
+ *
+ * Foreign copper is cleared out of the flood rather than the flood being clipped around it.
+ * That is how it is drawn, how it is exported, and why no polygon clipping is needed: the
+ * Gerber writes the region dark, then punches the clearances out in clear polarity.
+ */
+export interface CopperPour {
+  id: string;
+  net: string;
+  layer: 'top' | 'bottom';
+  margin: number; // inset from the board edge, mm
+  clearance: number; // copper-to-pour clearance for every other net, mm
+}
+
 export interface PCBLayoutData {
   boardWidth: number; // in mm
   boardHeight: number; // in mm
   footprints: PCBFootprint[];
   traces: PCBTrace[];
   vias: PCBVia[];
+  pours: CopperPour[];
 }
 
 export interface SimResult {

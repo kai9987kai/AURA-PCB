@@ -1,5 +1,5 @@
 import type { PCBLayoutData, SchematicData, SimResult } from '../types/pcb';
-import { analyzeTraceSI, calculateTraceLength } from '../simulation/signalIntegrity';
+import { analyzeTraceSI, calculateTraceLength, hasReferencePlane } from '../simulation/signalIntegrity';
 import { analyzeBoard } from './boardChecks';
 
 type RiskLevel = 'low' | 'medium' | 'high';
@@ -81,7 +81,10 @@ export function buildResearchReport(
     let reason = net.fullyRouted ? 'All pads share a copper connection. SI still requires the actual stackup and signal model.' : `${net.connectedGroups} disconnected pad groups remain; copper continuity is incomplete.`;
     for (const trace of traces) {
       try {
-        const estimate = analyzeTraceSI(trace, layout.traces);
+        // The undefined arguments keep the model's own declared defaults; only the last
+        // argument, whether this board actually has a reference plane, is known here.
+        const estimate = analyzeTraceSI(trace, layout.traces, undefined, undefined, undefined,
+          undefined, undefined, undefined, hasReferencePlane(trace, layout.pours ?? []));
         analyzedTraces++;
         if (delayPs === undefined || estimate.propagationDelay * 1000 > delayPs) {
           delayPs = estimate.propagationDelay * 1000;
@@ -115,7 +118,7 @@ export function buildResearchReport(
   if (!physicalComponents.length) recommendations.push({ priority: 'P0', category: 'Workflow', title: 'Load or capture a circuit', detail: 'A design and its matching PCB footprints are needed before these checks have meaning.' });
   if (issues.length) recommendations.push({ priority: 'P0', category: 'Board checks', title: `Resolve ${issues.length} board finding(s)`, detail: issues.slice(0, 3).join(' ') });
   const unrouted = nets.filter(net => !net.routed);
-  if (unrouted.length) recommendations.push({ priority: 'P0', category: 'Connectivity', title: 'Complete copper connectivity', detail: `${unrouted.map(net => net.net).join(', ')} have disconnected pads. Ground requires a real connection too; no copper plane is inferred.` });
+  if (unrouted.length) recommendations.push({ priority: 'P0', category: 'Connectivity', title: 'Complete copper connectivity', detail: `${unrouted.map(net => net.net).join(', ')} have disconnected pads. Ground needs a real connection too: route it, or flood the layer with a pour on that net.` });
   if (!simulationAvailable) recommendations.push({ priority: 'P1', category: 'Simulation', title: 'Obtain a successful simulation', detail: simResult?.errorMessage || 'Run the current circuit. Missing or invalid power results do not count as thermal evidence.' });
   if (maxPowerW > 0.2) recommendations.push({ priority: 'P1', category: 'Thermal', title: 'Review device power and heat paths', detail: `Peak modeled device dissipation is ${maxPowerW.toFixed(2)} W. Use the actual package and board thermal data to assess temperature.` });
   if (layout.traces.length) recommendations.push({ priority: 'P1', category: 'Signal integrity', title: 'Set the actual signal and stackup', detail: 'The net table screens at 0.5 ns, er 4.5, 1.6 mm plane distance, and 35 um copper. Use the SI workspace for a specific trace; table delay is the longest trace object, not end-to-end net delay.' });
@@ -131,8 +134,8 @@ export function buildResearchReport(
     simulationAvailable, issues, metrics, nets, recommendations, sources: RESEARCH_SOURCES,
     assumptions: [
       'The checklist score is a workflow aid, not a certification or predicted fabrication yield.',
-      'Connectivity uses the stored pad and trace nets; only actual modeled copper connects layers. No ground plane is assumed.',
-      'SI estimates assume a continuous reference plane and uniform microstrip geometry. Copper area is trace length times width and double-counts overlap.',
+      'Connectivity uses the stored pad and trace nets; only actual modeled copper connects layers. A pour counts as copper and joins same-net items that fall inside it; no plane is inferred where none is drawn.',
+      'SI estimates assume a uniform microstrip over a continuous reference plane. A pour on the opposite layer satisfies that assumption at board level, but its continuity beneath a given trace is not checked. Copper area is trace length times width and double-counts overlap, and excludes pour area.',
       'Simulation and thermal views are simplified models; component power alone cannot establish junction temperature or thermal margin.',
     ],
     manufacturing: {

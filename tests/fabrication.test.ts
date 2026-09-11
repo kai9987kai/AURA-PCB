@@ -9,7 +9,7 @@ import type { PCBFootprint, PCBLayoutData, PCBTrace, PCBVia, SchematicData } fro
 
 const BOARD_HEIGHT = 20;
 const board = (overrides: Partial<PCBLayoutData> = {}): PCBLayoutData => ({
-  boardWidth: 40, boardHeight: BOARD_HEIGHT, footprints: [], traces: [], vias: [], ...overrides,
+  boardWidth: 40, boardHeight: BOARD_HEIGHT, footprints: [], traces: [], vias: [], pours: [], ...overrides,
 });
 const part = (id: string, x: number, y: number, holeDiameter: number, rotation = 0): PCBFootprint => ({
   id, componentId: id, type: 'resistor', x, y, rotation, width: 4, height: 2, isPlaced: true,
@@ -159,7 +159,7 @@ test('every generated file is terminated and the package documents its own limit
 
   const notes = buildFabricationPackage(layout, 'demo').find(file => file.filename.endsWith('NOTES.txt'));
   assert.ok(notes, 'the package must carry its own limitations');
-  for (const stated of ['No copper pour', 'no stroke font', 'implies no', 'reflects Y']) {
+  for (const stated of ['No thermal relief', 'no stroke font', 'implies no', 'reflects Y']) {
     assert.ok(notes.contents.includes(stated), `notes must state: ${stated}`);
   }
 });

@@ -224,7 +224,7 @@ function App() {
         { id: 'G3', componentId: 'G3', type: 'gnd', x: 68.0, y: 45.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true }
       ];
 
-      commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [] } }, 'replace');
+      commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [], pours: [] } }, 'replace');
 
     } else if (presetName === 'ledFlasher') {
       // BJT LED Astable Multivibrator or simple Transistor Switch Flasher
@@ -264,7 +264,7 @@ function App() {
         { id: 'G2', componentId: 'G2', type: 'gnd', x: 68.0, y: 40.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true }
       ];
 
-      commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [] } }, 'replace');
+      commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [], pours: [] } }, 'replace');
 
     } else if (presetName === 'bandpassFilter') {
       // Opamp Active Bandpass Filter
@@ -292,7 +292,7 @@ function App() {
         { id: 'G1', componentId: 'G1', type: 'gnd', x: 68.0, y: 45.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true }
       ];
 
-      commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [] } }, 'replace');
+      commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [], pours: [] } }, 'replace');
 
     } else if (presetName === 'rlcResonant') {
       // Passive RLC Resonant circuit
@@ -326,7 +326,7 @@ function App() {
         { id: 'G2', componentId: 'G2', type: 'gnd', x: 60.0, y: 45.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true }
       ];
 
-      commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [] } }, 'replace');
+      commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [], pours: [] } }, 'replace');
     }
   };
 

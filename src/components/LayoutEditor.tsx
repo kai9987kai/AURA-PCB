@@ -3,6 +3,12 @@ import type { PCBLayoutData, PCBTrace, Pad, PCBVia } from '../types/pcb';
 import { Route, Layers, Ruler, Trash2, CircleDot, ZoomIn, ZoomOut, RotateCcw, Sparkles } from 'lucide-react';
 import { analyzeBoard, BOARD_RULES, getPadBoardCoords, pointSegmentDistance, segmentDistance } from '../analysis/boardChecks';
 
+/** The substrate colour, reused to punch pour clearances back down to bare board. */
+const BOARD_BACKGROUND = '#101014';
+
+/** Conservative starting geometry for a new flood, editable once pours carry their own panel. */
+const POUR_DEFAULTS = { margin: 0.5, clearance: 0.3 };
+
 interface LayoutEditorProps {
   layoutData: PCBLayoutData;
   selectedCompId: string | null;
@@ -26,7 +32,6 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
   const [activeLayer, setActiveLayer] = useState<'top' | 'bottom'>('top');
   const [isRouting, setIsRouting] = useState(false);
   const [traceWidthInput, setTraceWidthInput] = useState('0.40');
-  const [showGroundPour, setShowGroundPour] = useState(false);
   const [routeNotice, setRouteNotice] = useState('');
   const [showMeasurements, setShowMeasurements] = useState(true);
   const [snap45, setSnap45] = useState(true);
@@ -52,6 +57,16 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
     setBoardWInput(layoutData.boardWidth.toString());
     setBoardHInput(layoutData.boardHeight.toString());
   }
+
+  const activePour = layoutData.pours.find(pour => pour.layer === activeLayer);
+  // One flood per layer: two on the same side would overlap across the board and short.
+  const togglePour = () => {
+    const others = layoutData.pours.filter(pour => pour.layer !== activeLayer);
+    onUpdateLayout({
+      ...layoutData,
+      pours: activePour ? others : [...others, { id: `pour-${activeLayer}`, net: 'GND', layer: activeLayer, ...POUR_DEFAULTS }],
+    });
+  };
 
   // Translate click coords to mm with zoom and pan
   const getMMCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -139,7 +154,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
     ctx.translate(-boardWidthPx / 2, -boardHeightPx / 2);
 
     // Board substrate outline
-    ctx.fillStyle = '#101014';
+    ctx.fillStyle = BOARD_BACKGROUND;
     ctx.fillRect(0, 0, boardWidthPx, boardHeightPx);
     ctx.strokeStyle = '#27272a';
     ctx.lineWidth = 1.5;
@@ -155,32 +170,53 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
 
     const { footprints, traces, vias } = layoutData;
 
-    // Ground pour flood visualization with thermal relief
-    if (showGroundPour) {
-      const pourColor = activeLayer === 'top' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(59, 130, 246, 0.12)';
-      ctx.fillStyle = pourColor;
-      ctx.fillRect(2, 2, boardWidthPx - 4, boardHeightPx - 4);
-      ctx.strokeStyle = activeLayer === 'top' ? 'rgba(239, 68, 68, 0.35)' : 'rgba(59, 130, 246, 0.35)';
+    // Pours are real objects, so draw the flood the exporter will actually write: the same
+    // region, with the same clearance punched out of it around every other net. A picture that
+    // cannot drift from the file is the whole point of drawing it from the model.
+    for (const pour of layoutData.pours) {
+      const x0 = pour.margin * SCALE;
+      const y0 = pour.margin * SCALE;
+      const floodWidth = (layoutData.boardWidth - 2 * pour.margin) * SCALE;
+      const floodHeight = (layoutData.boardHeight - 2 * pour.margin) * SCALE;
+      if (!(floodWidth > 0 && floodHeight > 0) || !(pour.clearance > 0)) continue;
+      const onTop = pour.layer === 'top';
+      ctx.fillStyle = onTop ? 'rgba(239, 68, 68, 0.16)' : 'rgba(59, 130, 246, 0.16)';
+      ctx.fillRect(x0, y0, floodWidth, floodHeight);
+      ctx.strokeStyle = onTop ? 'rgba(239, 68, 68, 0.4)' : 'rgba(59, 130, 246, 0.4)';
       ctx.lineWidth = 1;
       ctx.setLineDash([6, 4]);
-      ctx.strokeRect(2, 2, boardWidthPx - 4, boardHeightPx - 4);
+      ctx.strokeRect(x0, y0, floodWidth, floodHeight);
       ctx.setLineDash([]);
 
-      // Thermal relief spokes for GND pads
-      footprints.forEach(fp => {
-        fp.pads.filter(p => p.net === 'GND').forEach(pad => {
-          const pc = getPadBoardCoords(fp, pad);
-          const px = pc.x * SCALE;
-          const py = pc.y * SCALE;
-          const r = (pad.diameter / 2 + 0.5) * SCALE;
-          ctx.strokeStyle = '#10b981';
-          ctx.lineWidth = 1.2;
-          ctx.beginPath();
-          ctx.moveTo(px - r, py); ctx.lineTo(px + r, py);
-          ctx.moveTo(px, py - r); ctx.lineTo(px, py + r);
-          ctx.stroke();
-        });
-      });
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x0, y0, floodWidth, floodHeight);
+      ctx.clip();
+      ctx.fillStyle = BOARD_BACKGROUND;
+      ctx.strokeStyle = BOARD_BACKGROUND;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (const trace of traces) {
+        if (trace.layer !== pour.layer || trace.net === pour.net || trace.points.length < 2) continue;
+        ctx.beginPath();
+        ctx.lineWidth = (trace.width + 2 * pour.clearance) * SCALE;
+        ctx.moveTo(trace.points[0].x * SCALE, trace.points[0].y * SCALE);
+        for (let i = 1; i < trace.points.length; i++) ctx.lineTo(trace.points[i].x * SCALE, trace.points[i].y * SCALE);
+        ctx.stroke();
+      }
+      const punch = (x: number, y: number, diameter: number) => {
+        ctx.beginPath();
+        ctx.arc(x * SCALE, y * SCALE, (diameter / 2 + pour.clearance) * SCALE, 0, 2 * Math.PI);
+        ctx.fill();
+      };
+      // An SMD pad only sits in the top plane; a drilled pad reaches both.
+      footprints.forEach(fp => fp.pads.forEach(pad => {
+        if (pad.net === pour.net || !(onTop || pad.holeDiameter > 0)) return;
+        const at = getPadBoardCoords(fp, pad);
+        punch(at.x, at.y, pad.diameter);
+      }));
+      vias.forEach(via => { if (via.net !== pour.net) punch(via.x, via.y, via.diameter); });
+      ctx.restore();
     }
 
     // 1. Draw Traces
@@ -348,7 +384,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
     });
 
     ctx.restore();
-  }, [layoutData, selectedCompId, routingStart, routingPoints, mousePos, activeLayer, isRouting, drcErrors, showGroundPour, showMeasurements, activeTraceWidth, boardWidthPx, boardHeightPx, boardAnalysis, zoom, pan, snap45]);
+  }, [layoutData, selectedCompId, routingStart, routingPoints, mousePos, activeLayer, isRouting, drcErrors, showMeasurements, activeTraceWidth, boardWidthPx, boardHeightPx, boardAnalysis, zoom, pan, snap45]);
 
   // Handle canvas mouse actions
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -793,15 +829,18 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
         </button>
 
         <button
-          onClick={() => setShowGroundPour(!showGroundPour)}
+          onClick={togglePour}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-mono text-xs transition-all ${
-            showGroundPour
+            activePour
               ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-400 font-bold'
               : 'bg-zinc-900/80 border-zinc-800 text-zinc-400'
           }`}
+          title={activePour
+            ? `Remove the ${activeLayer} GND plane`
+            : `Flood the ${activeLayer} layer with a GND plane, cleared by ${POUR_DEFAULTS.clearance}mm around every other net`}
         >
           <Layers className="w-3.5 h-3.5 text-emerald-400" />
-          Copper Flood: {showGroundPour ? 'ON' : 'OFF'}
+          GND Plane ({activeLayer}): {activePour ? 'ON' : 'OFF'}
         </button>
 
         <button

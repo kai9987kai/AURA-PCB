@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import type { PCBLayoutData } from '../types/pcb';
-import { analyzeTraceSI, simulateReflections } from '../simulation/signalIntegrity';
+import { analyzeTraceSI, hasReferencePlane, simulateReflections } from '../simulation/signalIntegrity';
 import { Radio, Zap, BookOpen } from 'lucide-react';
 
 interface SignalIntegrityPanelProps {
@@ -31,11 +31,12 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
     try {
       const values = [substrateHeight, dielectricConstant, copperThickness, riseTime, sourceImpedance, loadImpedance];
       if (values.some(value => value.trim() === '')) throw new Error('Complete every model input to calculate an estimate.');
-      return { report: analyzeTraceSI(activeTrace, traces, ...values.map(Number) as [number, number, number, number, number, number]), error: '' };
+      const plane = hasReferencePlane(activeTrace, layoutData.pours ?? []);
+      return { report: analyzeTraceSI(activeTrace, traces, ...values.map(Number) as [number, number, number, number, number, number], plane), error: '' };
     } catch (error) {
       return { report: null, error: error instanceof Error ? error.message : 'Invalid signal model inputs.' };
     }
-  }, [activeTrace, traces, riseTime, sourceImpedance, loadImpedance, substrateHeight, dielectricConstant, copperThickness]);
+  }, [activeTrace, traces, layoutData.pours, riseTime, sourceImpedance, loadImpedance, substrateHeight, dielectricConstant, copperThickness]);
   const siReport = analysis.report;
 
   // Simulate reflections ringing graph

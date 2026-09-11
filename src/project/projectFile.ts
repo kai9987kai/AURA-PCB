@@ -4,7 +4,7 @@ import { reconcileCopper } from './connectivity';
 export interface Project { name: string; schematic: SchematicData; pcbLayout: PCBLayoutData }
 export const MAX_FILE_BYTES = 2_000_000;
 export const STORAGE_KEY = 'aura-pcb.project.v1';
-export const emptyProject = (): Project => ({ name: 'Untitled board', schematic: { components: [], wires: [] }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints: [], traces: [], vias: [] } });
+export const emptyProject = (): Project => ({ name: 'Untitled board', schematic: { components: [], wires: [] }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints: [], traces: [], vias: [], pours: [] } });
 const types = new Set<ComponentType>(['resistor', 'capacitor', 'inductor', 'voltage_source', 'gnd', 'diode', 'led', 'transistor_npn', 'opamp', 'timer555', 'mosfet_n', 'zener', 'potentiometer']);
 const fail = (field: string): never => { throw new Error(`Invalid project: ${field}.`); };
 const object = (v: unknown, field: string): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : fail(field);
@@ -72,8 +72,17 @@ export function parseProject(contents: string): Project {
     const p = object(v, 'via'); const diameter = number(p.diameter, 'via diameter', 0.01, 20);
     return { id: id(p.id, 'via id'), x: number(p.x, 'x'), y: number(p.y, 'y'), net: net(p.net) ?? '', diameter, drillDiameter: number(p.drillDiameter, 'via drill', 0.01, diameter) };
   }), 'via id');
+  // Absent in documents written before pours existed, so treat a missing list as none.
+  const pours = unique(list(pcb.pours ?? [], 'pours', 8).map(v => {
+    const p = object(v, 'pour');
+    if (p.layer !== 'top' && p.layer !== 'bottom') fail('pour layer');
+    const clearance = number(p.clearance, 'pour clearance', 0.05, 10);
+    return { id: id(p.id, 'pour id'), net: text(p.net, 'pour net', 200), layer: p.layer as 'top' | 'bottom', margin: number(p.margin, 'pour margin', 0, 100), clearance };
+  }), 'pour id');
+  // Two floods on one layer would overlap across the whole board and short their nets.
+  if (new Set(pours.map(pour => pour.layer)).size !== pours.length) fail('one pour per layer');
   const schematic = { components, wires };
-  const layout = { boardWidth: number(pcb.boardWidth, 'board width', 10, 500), boardHeight: number(pcb.boardHeight, 'board height', 10, 500), footprints, traces, vias };
+  const layout = { boardWidth: number(pcb.boardWidth, 'board width', 10, 500), boardHeight: number(pcb.boardHeight, 'board height', 10, 500), footprints, traces, vias, pours };
   return { name: text(data.name, 'project name', 80), ...reconcileCopper(schematic, schematic, layout) };
 }
 

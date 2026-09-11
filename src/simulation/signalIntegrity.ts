@@ -1,4 +1,4 @@
-import type { PCBTrace, SignalIntegrityReport } from '../types/pcb';
+import type { CopperPour, PCBTrace, SignalIntegrityReport } from '../types/pcb';
 
 type Point = { x: number; y: number };
 
@@ -20,6 +20,14 @@ function requireRange(value: number, name: string, min: number, max: number, inc
     throw new Error(`${name} must be ${inclusive ? 'at least' : 'greater than'} ${min} and at most ${max}.`);
   }
 }
+
+/**
+ * A microstrip is only a microstrip if copper exists on the far side of the substrate.
+ * This answers whether the board models such a plane at all, not whether it is continuous
+ * beneath any particular trace.
+ */
+export const hasReferencePlane = (trace: Pick<PCBTrace, 'layer'>, pours: CopperPour[]) =>
+  pours.some(pour => pour.layer !== trace.layer);
 
 export function calculateTraceLength(points: Point[]): number {
   let length = 0;
@@ -97,6 +105,7 @@ export function analyzeTraceSI(
   riseTimeNs = 0.5,
   sourceImpedance = 50,
   loadImpedance = 10000,
+  referencePlane = false,
 ): SIAnalysis {
   requireRange(trace.width, 'Trace width (mm)', 0, 1000);
   requireRange(substrateHeightMm, 'Reference-plane distance (mm)', 0, 100);
@@ -127,9 +136,12 @@ export function analyzeTraceSI(
   } else {
     suggestions.push('Electrically short under the selected rise time; this screening check does not assess vias, loads, or return-path interruptions.');
   }
+  if (!referencePlane) suggestions.push('No pour on the opposite layer, so this impedance describes a stackup the board does not have. Flood the opposite layer with a ground plane in the layout editor, or read the figure as hypothetical.');
   if (crosstalkPeakVoltage > 150) suggestions.push('Nearby parallel routing raises the coupling indicator. Increase separation or shorten parallel overlap, then check with a coupled-line model.');
   const modelNotes = [
-    'Assumes a uniform external microstrip over a continuous reference plane. The board editor does not model or verify that plane.',
+    referencePlane
+      ? 'A pour on the opposite layer supplies the reference plane this model assumes. Whether that plane stays continuous beneath this trace is not checked: clearances around other nets can interrupt the return path.'
+      : 'Assumes a uniform external microstrip over a continuous reference plane. No pour on the opposite layer models one, so that plane does not exist on this board.',
     'Coupling is a geometric indicator for same-layer traces, not a calibrated noise prediction. Cross-layer coupling, losses, vias, and receiver capacitance are omitted.',
   ];
   if (trace.width / substrateHeightMm < 0.01 || trace.width / substrateHeightMm > 100 || copperThicknessUm / 1000 >= substrateHeightMm / 2) {

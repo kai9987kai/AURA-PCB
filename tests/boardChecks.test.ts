@@ -4,7 +4,7 @@ import { analyzeBoard, getPadBoardCoords, segmentDistance } from '../src/analysi
 import type { PCBFootprint, PCBLayoutData, PCBTrace, PCBVia } from '../src/types/pcb.ts';
 
 const board = (overrides: Partial<PCBLayoutData> = {}): PCBLayoutData => ({
-  boardWidth: 50, boardHeight: 40, footprints: [], traces: [], vias: [], ...overrides,
+  boardWidth: 50, boardHeight: 40, footprints: [], traces: [], vias: [], pours: [], ...overrides,
 });
 const pad = (id: string, x: number, y: number, net?: string, holeDiameter = 0): PCBFootprint => ({
   id, componentId: id, type: 'resistor', x, y, rotation: 0, width: 2, height: 2, isPlaced: true,
