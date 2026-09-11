@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { PCBLayoutData, PCBTrace, Pad, PCBVia } from '../types/pcb';
-import { Route, CheckCircle, Layers, Ruler, Trash2, CircleDot, ZoomIn, ZoomOut, RotateCcw, Sparkles } from 'lucide-react';
+import { Route, Layers, Ruler, Trash2, CircleDot, ZoomIn, ZoomOut, RotateCcw, Sparkles } from 'lucide-react';
 import { analyzeBoard, BOARD_RULES, getPadBoardCoords, pointSegmentDistance, segmentDistance } from '../analysis/boardChecks';
 
 interface LayoutEditorProps {
@@ -44,11 +44,14 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
   const boardHeightPx = layoutData.boardHeight * SCALE;
   const activeTraceWidth = Math.max(0.15, parseFloat(traceWidthInput) || 0.4);
 
-  // Keep board inputs in sync if layoutData changes externally
-  useEffect(() => {
+  // Board size also changes outside this editor (import, undo, a new project). Adjusting
+  // during render re-syncs the text inputs without the extra commit an effect would cost.
+  const [syncedSize, setSyncedSize] = useState({ w: layoutData.boardWidth, h: layoutData.boardHeight });
+  if (syncedSize.w !== layoutData.boardWidth || syncedSize.h !== layoutData.boardHeight) {
+    setSyncedSize({ w: layoutData.boardWidth, h: layoutData.boardHeight });
     setBoardWInput(layoutData.boardWidth.toString());
     setBoardHInput(layoutData.boardHeight.toString());
-  }, [layoutData.boardWidth, layoutData.boardHeight]);
+  }
 
   // Translate click coords to mm with zoom and pan
   const getMMCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {

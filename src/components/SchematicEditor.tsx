@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import type { SchematicComponent, Wire, SchematicData, Pin } from '../types/pcb';
-import { ZoomIn, ZoomOut, RotateCcw, Trash2 } from 'lucide-react';
+import { ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 
 interface SchematicEditorProps {
   data: SchematicData;

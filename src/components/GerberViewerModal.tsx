@@ -1,13 +1,14 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import type { PCBLayoutData } from '../types/pcb';
+import type { PCBLayoutData, SchematicData } from '../types/pcb';
 import { buildFabricationPackage } from '../export/gerber';
-import type { FabricationFile } from '../export/gerber';
 import { downloadText } from '../project/projectFile';
 import { X, Download, Layers, ZoomIn, ZoomOut, RotateCcw, Check, Eye } from 'lucide-react';
 import { getPadBoardCoords } from '../analysis/boardChecks';
 
 interface GerberViewerModalProps {
   layout: PCBLayoutData;
+  /** Supplies component values to the centroid; the layout alone does not carry them. */
+  schematic?: SchematicData;
   projectName: string;
   isOpen: boolean;
   onClose: () => void;
@@ -15,6 +16,7 @@ interface GerberViewerModalProps {
 
 export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
   layout,
+  schematic,
   projectName,
   isOpen,
   onClose
@@ -38,8 +40,8 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const files = useMemo(() => {
-    return buildFabricationPackage(layout, projectName);
-  }, [layout, projectName]);
+    return buildFabricationPackage(layout, projectName, schematic);
+  }, [layout, projectName, schematic]);
 
   const toggleLayer = (layerId: string) => {
     setVisibleLayers(prev => ({ ...prev, [layerId]: !prev[layerId] }));
@@ -254,9 +256,11 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
       const midY = rect.height / 2 + pan.y;
       const mmX = (e.clientX - rect.left - midX) / scaleMm + layout.boardWidth / 2;
       const mmY = (e.clientY - rect.top - midY) / scaleMm + layout.boardHeight / 2;
+      // Quote fabrication-file coordinates, whose origin is the lower-left corner, so a
+      // hovered feature reads the same here as it does in the Gerber and drill files.
       setMouseMm({
         x: Math.max(0, Math.min(layout.boardWidth, Math.round(mmX * 10) / 10)),
-        y: Math.max(0, Math.min(layout.boardHeight, Math.round(mmY * 10) / 10))
+        y: Math.max(0, Math.min(layout.boardHeight, Math.round((layout.boardHeight - mmY) * 10) / 10))
       });
     }
   };
@@ -411,7 +415,7 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
 
             {/* Position HUD */}
             <div className="absolute bottom-3 right-3 z-10 bg-zinc-900/80 backdrop-blur border border-zinc-800 rounded-lg px-3 py-1 text-xs font-mono text-zinc-400 shadow-xl">
-              X: <span className="text-zinc-200">{mouseMm.x.toFixed(1)}</span> mm | Y: <span className="text-zinc-200">{mouseMm.y.toFixed(1)}</span> mm
+              X: <span className="text-zinc-200">{mouseMm.x.toFixed(1)}</span> mm | Y: <span className="text-zinc-200">{mouseMm.y.toFixed(1)}</span> mm <span className="text-zinc-600">(file origin, lower-left)</span>
             </div>
 
             <canvas

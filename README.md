@@ -28,8 +28,7 @@ AURA PCB is a research-grade, browser-based EDA (Electronic Design Automation) a
 - **Simulation Coupling**: Automatically maps heat sources using component power dissipation ($P = V \times I$) computed in the SPICE simulation.
 
 ### 5. High-Speed Signal Integrity Analyzer
-- **Impedance Solver**: Computes characteristic impedance ($Z_0$) using IPC-2141 microstrip stackup formulas:
-  $$Z_0 = \frac{87}{\sqrt{\epsilon_r + 1.41}} \ln\left(\frac{5.98h}{0.8w + t}\right)$$
+- **Impedance Solver**: Computes characteristic impedance ($Z_0$) with the Hammerstad-Jensen quasi-static microstrip model, including the finite conductor-thickness correction. It assumes a uniform external microstrip over a continuous reference plane, which the board editor does not itself model or verify.
 - **Reflections Ringing Simulator**: Models transmission-line reflection effects at high frequencies when edge rates are fast relative to propagation delay. Plot outputs on a dedicated ringing scope.
 - **Crosstalk Estimator**: Calculates electromagnetic coupling to adjacent parallel traces (crosstalk peak voltage in mV).
 

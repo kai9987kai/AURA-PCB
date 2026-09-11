@@ -254,6 +254,8 @@ export function simulateEyeDiagram(
   const td = report.propagationDelay || 0;
   const source = report.sourceImpedance ?? 50;
   const load = report.loadImpedance ?? 10000;
+  // A delay-free line reduces to the resistive divider, matching simulateReflections.
+  const shortLineGain = source + load === 0 ? 0 : load / (source + load);
   const swing = report.signalSwingV ?? 3.3;
   const initial = swing * report.impedance / (source + report.impedance);
   const product = (report.reflectionCoefficientSource || 0) * (report.reflectionCoefficientLoad || 0);
@@ -269,7 +271,7 @@ export function simulateEyeDiagram(
 
     // Reflection bounce series
     const tInBit = (s % samplesPerBit) * dt;
-    let driveReflected = targetDrive;
+    let driveReflected = td > 0 ? targetDrive : targetDrive * shortLineGain;
     if (td > 0 && tInBit >= td) {
       const arrivals = Math.min(5, Math.floor((tInBit - td) / (2 * td)) + 1);
       const sum = product === 1 ? arrivals : (1 - product ** arrivals) / (1 - product);
