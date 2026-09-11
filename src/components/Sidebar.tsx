@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import type { SchematicComponent, ComponentType } from '../types/pcb';
+import { PARTS, PART_TYPES } from '../project/parts';
 import { FileText, Cpu, AlertTriangle, Search, X } from 'lucide-react';
 
 interface SidebarProps {
@@ -23,39 +24,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'passives' | 'actives' | 'ics' | 'sources'>('all');
 
-  const getItemCategory = (type: ComponentType): 'passives' | 'actives' | 'ics' | 'sources' | 'other' => {
-    switch (type) {
-      case 'resistor':
-      case 'capacitor':
-      case 'inductor':
-        return 'passives';
-      case 'diode':
-      case 'led':
-      case 'transistor_npn':
-        return 'actives';
-      case 'opamp':
-      case 'timer555':
-        return 'ics';
-      case 'voltage_source':
-      case 'gnd':
-        return 'sources';
-      default:
-        return 'other';
-    }
-  };
-
-  const libraryItems: { type: ComponentType; label: string; desc: string; symbol: string }[] = [
-    { type: 'resistor', label: 'Resistor', desc: 'Passive resistor (R)', symbol: '电阻 R' },
-    { type: 'capacitor', label: 'Capacitor', desc: 'Decoupling/Filter (C)', symbol: '电容 C' },
-    { type: 'inductor', label: 'Inductor', desc: 'Energy storage (L)', symbol: '电感 L' },
-    { type: 'voltage_source', label: 'Voltage Source', desc: 'DC/AC Power', symbol: '电源 Vcc' },
-    { type: 'gnd', label: 'Ground', desc: 'Reference Node (0V)', symbol: '地 GND' },
-    { type: 'diode', label: 'Diode', desc: 'Silicon Diode (D)', symbol: '二极管 D' },
-    { type: 'led', label: 'LED', desc: 'Light Emitting Diode', symbol: '发光二极管 LED' },
-    { type: 'transistor_npn', label: 'NPN Transistor', desc: 'BJT Transistor (Q)', symbol: '三极管 NPN' },
-    { type: 'opamp', label: 'Op-Amp', desc: 'Operational Amplifier (U)', symbol: '运放 Op-Amp' },
-    { type: 'timer555', label: '555 Timer', desc: 'Mixed-Signal Astable (IC)', symbol: '555 定时器' }
-  ];
+  // The library is whatever the part table declares, so a new component type appears here
+  // by existing rather than by being listed again.
+  const libraryItems = PART_TYPES.map(type => ({ type, ...PARTS[type] }));
 
   return (
     <aside aria-label="Component library and design properties" className="component-sidebar w-80 flex flex-col border-r border-zinc-800 bg-zinc-950/80 backdrop-blur-md text-zinc-100 h-full select-none">
@@ -124,9 +95,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
           ];
 
           const filteredItems = libraryItems.filter(item => {
-            const matchesCategory = selectedCategory === 'all' || getItemCategory(item.type) === selectedCategory;
+            const matchesCategory = selectedCategory === 'all' || item.category === selectedCategory;
             const matchesSearch = item.label.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                                  item.desc.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                                  item.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
                                   item.type.toLowerCase().includes(searchQuery.toLowerCase());
             return matchesCategory && matchesSearch;
           });
@@ -199,7 +170,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="text-sm font-semibold text-zinc-200 group-hover:text-white transition-colors">{item.label}</div>
-                          <div className="text-[11px] text-zinc-400 truncate">{item.desc}</div>
+                          <div className="text-[11px] text-zinc-400 truncate">{item.description}</div>
                         </div>
                       </button>
                     ))}

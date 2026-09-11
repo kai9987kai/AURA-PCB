@@ -352,10 +352,12 @@ export const SchematicEditor: React.FC<SchematicEditorProps> = ({
   };
 
   // Determine dashed speed of wire animation based on current
-  const getWireDashStyle = (wire: Wire) => {
-    if (!simCurrents || !simCurrents[wire.fromCompId]) return 'none';
+  // A quiet wire gets no style at all. Returning a string here is what React rejects, and it
+  // took the whole editor down for any circuit with a branch carrying no current.
+  const getWireDashStyle = (wire: Wire): React.CSSProperties | undefined => {
+    if (!simCurrents || !simCurrents[wire.fromCompId]) return undefined;
     const current = simCurrents[wire.fromCompId] || 0;
-    if (Math.abs(current) < 1e-6) return 'none';
+    if (Math.abs(current) < 1e-6) return undefined;
 
     const speed = Math.max(1, Math.min(20, Math.abs(current) * 10000));
     const dir = current > 0 ? 'normal' : 'reverse';
@@ -461,7 +463,19 @@ export const SchematicEditor: React.FC<SchematicEditorProps> = ({
               const isWireSelected = selectedComponent?.id === wire.id;
               const strokeWidth = isWireSelected ? 3.5 : 2;
 
-              const p = wire.points;
+              // A wire ends at its pins wherever those are now; the stored points only describe
+              // the route between them. That keeps wires attached when a part is dragged, and
+              // gives a wire that arrived with no route (an import) a straight line to start from.
+              const from = data.components.find(component => component.id === wire.fromCompId);
+              const to = data.components.find(component => component.id === wire.toCompId);
+              const fromPin = from?.pins.find(pin => pin.id === wire.fromPinId);
+              const toPin = to?.pins.find(pin => pin.id === wire.toPinId);
+              const p = from && to && fromPin && toPin
+                ? [getAbsolutePinCoords(from, fromPin), ...wire.points.slice(1, -1), getAbsolutePinCoords(to, toPin)]
+                : wire.points;
+              // A wire whose parts are gone and which carries no route of its own has nothing
+              // to draw, and must not take the whole editor down with it.
+              if (!p.length) return null;
               let dString = `M ${p[0].x} ${p[0].y}`;
               for (let i = 1; i < p.length; i++) {
                 dString += ` L ${p[i].x} ${p[i].y}`;
@@ -486,7 +500,7 @@ export const SchematicEditor: React.FC<SchematicEditorProps> = ({
                       strokeWidth="1.5"
                       strokeOpacity="0.8"
                       fill="none"
-                      style={getWireDashStyle(wire) as React.CSSProperties}
+                      style={getWireDashStyle(wire)}
                     />
                   )}
 

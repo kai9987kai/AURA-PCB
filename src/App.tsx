@@ -1,5 +1,5 @@
 import { useState, useMemo, lazy, Suspense } from 'react';
-import type { SimResult, SchematicComponent, Wire, ComponentType, Pin, Pad, PCBFootprint } from './types/pcb';
+import type { SimResult, SchematicComponent, Wire, ComponentType, PCBFootprint } from './types/pcb';
 import { Sidebar } from './components/Sidebar';
 import { SchematicEditor } from './components/SchematicEditor';
 import { LayoutEditor } from './components/LayoutEditor';
@@ -10,146 +10,10 @@ const ThreeDPCBViewer = lazy(() => import('./components/ThreeDPCBViewer').then(m
 import { useProject } from './project/useProject';
 import { ProjectToolbar } from './components/ProjectToolbar';
 import { electricalSignature, nextComponentId } from './project/connectivity';
+import { PARTS, partBody, partPads, partPins } from './project/parts';
 import { analyzeBoard } from './analysis/boardChecks';
 import { ResearchPanel } from './components/ResearchPanel';
 import { Activity, Edit3, Compass, Cpu, Thermometer, Zap } from 'lucide-react';
-
-// Default pins configuration for components
-const getPinsForType = (type: ComponentType): Pin[] => {
-  switch (type) {
-    case 'resistor':
-    case 'capacitor':
-    case 'inductor':
-      return [
-        { id: '1', label: '1', relX: -30, relY: 0 },
-        { id: '2', label: '2', relX: 30, relY: 0 }
-      ];
-    case 'diode':
-    case 'led':
-      return [
-        { id: 'a', label: 'A', relX: -30, relY: 0 },
-        { id: 'c', label: 'C', relX: 30, relY: 0 }
-      ];
-    case 'voltage_source':
-      return [
-        { id: 'p', label: '+', relX: -22, relY: 0 },
-        { id: 'n', label: '-', relX: 22, relY: 0 }
-      ];
-    case 'gnd':
-      return [
-        { id: 'gnd', label: 'GND', relX: 0, relY: 0 }
-      ];
-    case 'transistor_npn':
-      return [
-        { id: 'b', label: 'B', relX: -30, relY: 0 },
-        { id: 'c', label: 'C', relX: 20, relY: 15 },
-        { id: 'e', label: 'E', relX: 20, relY: -15 }
-      ];
-    case 'opamp':
-      return [
-        { id: 'in-', label: 'IN-', relX: -40, relY: -15 },
-        { id: 'in+', label: 'IN+', relX: -40, relY: 15 },
-        { id: 'out', label: 'OUT', relX: 40, relY: 0 },
-        { id: 'v+', label: 'V+', relX: 0, relY: -25 },
-        { id: 'v-', label: 'V-', relX: 0, relY: 25 }
-      ];
-    case 'timer555':
-      return [
-        { id: '1', label: 'GND', relX: -50, relY: -30 },
-        { id: '2', label: 'TRIG', relX: -50, relY: -10 },
-        { id: '3', label: 'OUT', relX: 50, relY: -30 },
-        { id: '4', label: 'RST', relX: -50, relY: 10 },
-        { id: '5', label: 'CTRL', relX: -50, relY: 30 },
-        { id: '6', label: 'THR', relX: 50, relY: -10 },
-        { id: '7', label: 'DIS', relX: 50, relY: 10 },
-        { id: '8', label: 'VCC', relX: 50, relY: 30 }
-      ];
-    default:
-      return [];
-  }
-};
-
-// Default pads configuration for PCB layout footprints
-const getPadsForType = (type: ComponentType): Pad[] => {
-  switch (type) {
-    case 'resistor':
-    case 'inductor':
-      return [
-        { id: '1', relX: -5.08, relY: 0, diameter: 1.6, holeDiameter: 0.8 },
-        { id: '2', relX: 5.08, relY: 0, diameter: 1.6, holeDiameter: 0.8 }
-      ];
-    case 'capacitor':
-      return [
-        { id: '1', relX: -2.54, relY: 0, diameter: 1.6, holeDiameter: 0.8 },
-        { id: '2', relX: 2.54, relY: 0, diameter: 1.6, holeDiameter: 0.8 }
-      ];
-    case 'diode':
-    case 'led':
-      return [
-        { id: 'a', relX: -3.81, relY: 0, diameter: 1.6, holeDiameter: 0.8 },
-        { id: 'c', relX: 3.81, relY: 0, diameter: 1.6, holeDiameter: 0.8 }
-      ];
-    case 'voltage_source':
-      return [
-        { id: 'p', relX: -2.54, relY: 0, diameter: 1.8, holeDiameter: 0.9 },
-        { id: 'n', relX: 2.54, relY: 0, diameter: 1.8, holeDiameter: 0.9 }
-      ];
-    case 'gnd':
-      return [
-        { id: 'gnd', relX: 0, relY: 0, diameter: 1.8, holeDiameter: 0.9 }
-      ];
-    case 'transistor_npn':
-      return [
-        { id: 'e', relX: -1.27, relY: -1.27, diameter: 1.4, holeDiameter: 0.7 },
-        { id: 'b', relX: 0, relY: 1.27, diameter: 1.4, holeDiameter: 0.7 },
-        { id: 'c', relX: 1.27, relY: -1.27, diameter: 1.4, holeDiameter: 0.7 }
-      ];
-    case 'opamp':
-      return [
-        { id: 'in-', relX: -3.81, relY: -1.27, diameter: 1.5, holeDiameter: 0.8 }, // pin 2
-        { id: 'in+', relX: -3.81, relY: 1.27, diameter: 1.5, holeDiameter: 0.8 },  // pin 3
-        { id: 'v-', relX: -3.81, relY: 3.81, diameter: 1.5, holeDiameter: 0.8 },   // pin 4
-        { id: 'out', relX: 3.81, relY: -1.27, diameter: 1.5, holeDiameter: 0.8 },  // pin 6
-        { id: 'v+', relX: 3.81, relY: 3.81, diameter: 1.5, holeDiameter: 0.8 }     // pin 7
-      ];
-    case 'timer555':
-      return [
-        { id: '1', relX: -3.81, relY: -3.81, diameter: 1.5, holeDiameter: 0.8 },
-        { id: '2', relX: -3.81, relY: -1.27, diameter: 1.5, holeDiameter: 0.8 },
-        { id: '3', relX: -3.81, relY: 1.27, diameter: 1.5, holeDiameter: 0.8 },
-        { id: '4', relX: -3.81, relY: 3.81, diameter: 1.5, holeDiameter: 0.8 },
-        { id: '5', relX: 3.81, relY: 3.81, diameter: 1.5, holeDiameter: 0.8 },
-        { id: '6', relX: 3.81, relY: 1.27, diameter: 1.5, holeDiameter: 0.8 },
-        { id: '7', relX: 3.81, relY: -1.27, diameter: 1.5, holeDiameter: 0.8 },
-        { id: '8', relX: 3.81, relY: -3.81, diameter: 1.5, holeDiameter: 0.8 }
-      ];
-    default:
-      return [];
-  }
-};
-
-const getFootprintDimensions = (type: ComponentType) => {
-  switch (type) {
-    case 'timer555':
-    case 'opamp':
-      return { width: 10.0, height: 10.0 };
-    case 'resistor':
-    case 'inductor':
-      return { width: 12.0, height: 4.0 };
-    case 'capacitor':
-      return { width: 6.0, height: 6.0 };
-    case 'diode':
-    case 'led':
-      return { width: 9.0, height: 4.0 };
-    case 'transistor_npn':
-      return { width: 5.0, height: 5.0 };
-    case 'voltage_source':
-    case 'gnd':
-      return { width: 6.0, height: 6.0 };
-    default:
-      return { width: 8.0, height: 8.0 };
-  }
-};
 
 function App() {
   const [activeView, setActiveView] = useState<'schematic' | 'layout2d' | 'layout3d' | 'simulation' | 'thermal' | 'si' | 'research'>('schematic');
@@ -178,15 +42,15 @@ function App() {
     // Preset configurations
     if (presetName === 'astable555') {
       const comps: SchematicComponent[] = [
-        { id: 'U1', type: 'timer555', name: '555 Timer', value: 'IC', x: 450, y: 240, rotation: 0, pins: getPinsForType('timer555'), params: {} },
-        { id: 'R1', type: 'resistor', name: 'R1', value: '1k', x: 340, y: 120, rotation: 90, pins: getPinsForType('resistor'), params: { resistance: 1000 } },
-        { id: 'R2', type: 'resistor', name: 'R2', value: '10k', x: 450, y: 120, rotation: 90, pins: getPinsForType('resistor'), params: { resistance: 10000 } },
-        { id: 'C1', type: 'capacitor', name: 'C1', value: '10u', x: 570, y: 240, rotation: 90, pins: getPinsForType('capacitor'), params: { capacitance: 10e-6 } },
-        { id: 'C2', type: 'capacitor', name: 'C2', value: '10n', x: 450, y: 410, rotation: 90, pins: getPinsForType('capacitor'), params: { capacitance: 10e-9 } },
-        { id: 'V1', type: 'voltage_source', name: 'Vcc', value: '5V', x: 200, y: 240, rotation: 270, pins: getPinsForType('voltage_source'), params: { voltage: 5 } },
-        { id: 'G1', type: 'gnd', name: 'GND1', value: 'GND', x: 200, y: 380, rotation: 0, pins: getPinsForType('gnd'), params: {} },
-        { id: 'G2', type: 'gnd', name: 'GND2', value: 'GND', x: 570, y: 380, rotation: 0, pins: getPinsForType('gnd'), params: {} },
-        { id: 'G3', type: 'gnd', name: 'GND3', value: 'GND', x: 450, y: 500, rotation: 0, pins: getPinsForType('gnd'), params: {} }
+        { id: 'U1', type: 'timer555', name: '555 Timer', value: 'IC', x: 450, y: 240, rotation: 0, pins: partPins('timer555'), params: {} },
+        { id: 'R1', type: 'resistor', name: 'R1', value: '1k', x: 340, y: 120, rotation: 90, pins: partPins('resistor'), params: { resistance: 1000 } },
+        { id: 'R2', type: 'resistor', name: 'R2', value: '10k', x: 450, y: 120, rotation: 90, pins: partPins('resistor'), params: { resistance: 10000 } },
+        { id: 'C1', type: 'capacitor', name: 'C1', value: '10u', x: 570, y: 240, rotation: 90, pins: partPins('capacitor'), params: { capacitance: 10e-6 } },
+        { id: 'C2', type: 'capacitor', name: 'C2', value: '10n', x: 450, y: 410, rotation: 90, pins: partPins('capacitor'), params: { capacitance: 10e-9 } },
+        { id: 'V1', type: 'voltage_source', name: 'Vcc', value: '5V', x: 200, y: 240, rotation: 270, pins: partPins('voltage_source'), params: { voltage: 5 } },
+        { id: 'G1', type: 'gnd', name: 'GND1', value: 'GND', x: 200, y: 380, rotation: 0, pins: partPins('gnd'), params: {} },
+        { id: 'G2', type: 'gnd', name: 'GND2', value: 'GND', x: 570, y: 380, rotation: 0, pins: partPins('gnd'), params: {} },
+        { id: 'G3', type: 'gnd', name: 'GND3', value: 'GND', x: 450, y: 500, rotation: 0, pins: partPins('gnd'), params: {} }
       ];
 
       const wires: Wire[] = [
@@ -213,15 +77,15 @@ function App() {
 
       // PCB Footprints positioned cleanly on a 80x55 board
       const footprints: PCBFootprint[] = [
-        { id: 'U1', componentId: 'U1', type: 'timer555', x: 40.0, y: 28.0, rotation: 0, ...getFootprintDimensions('timer555'), pads: getPadsForType('timer555'), isPlaced: true },
-        { id: 'R1', componentId: 'R1', type: 'resistor', x: 20.0, y: 15.0, rotation: 90, ...getFootprintDimensions('resistor'), pads: getPadsForType('resistor'), isPlaced: true },
-        { id: 'R2', componentId: 'R2', type: 'resistor', x: 40.0, y: 12.0, rotation: 0, ...getFootprintDimensions('resistor'), pads: getPadsForType('resistor'), isPlaced: true },
-        { id: 'C1', componentId: 'C1', type: 'capacitor', x: 60.0, y: 25.0, rotation: 90, ...getFootprintDimensions('capacitor'), pads: getPadsForType('capacitor'), isPlaced: true },
-        { id: 'C2', componentId: 'C2', type: 'capacitor', x: 40.0, y: 45.0, rotation: 0, ...getFootprintDimensions('capacitor'), pads: getPadsForType('capacitor'), isPlaced: true },
-        { id: 'V1', componentId: 'V1', type: 'voltage_source', x: 12.0, y: 35.0, rotation: 0, ...getFootprintDimensions('voltage_source'), pads: getPadsForType('voltage_source'), isPlaced: true },
-        { id: 'G1', componentId: 'G1', type: 'gnd', x: 68.0, y: 45.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true },
-        { id: 'G2', componentId: 'G2', type: 'gnd', x: 68.0, y: 45.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true },
-        { id: 'G3', componentId: 'G3', type: 'gnd', x: 68.0, y: 45.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true }
+        { id: 'U1', componentId: 'U1', type: 'timer555', x: 40.0, y: 28.0, rotation: 0, ...partBody('timer555'), pads: partPads('timer555'), isPlaced: true },
+        { id: 'R1', componentId: 'R1', type: 'resistor', x: 20.0, y: 15.0, rotation: 90, ...partBody('resistor'), pads: partPads('resistor'), isPlaced: true },
+        { id: 'R2', componentId: 'R2', type: 'resistor', x: 40.0, y: 12.0, rotation: 0, ...partBody('resistor'), pads: partPads('resistor'), isPlaced: true },
+        { id: 'C1', componentId: 'C1', type: 'capacitor', x: 60.0, y: 25.0, rotation: 90, ...partBody('capacitor'), pads: partPads('capacitor'), isPlaced: true },
+        { id: 'C2', componentId: 'C2', type: 'capacitor', x: 40.0, y: 45.0, rotation: 0, ...partBody('capacitor'), pads: partPads('capacitor'), isPlaced: true },
+        { id: 'V1', componentId: 'V1', type: 'voltage_source', x: 12.0, y: 35.0, rotation: 0, ...partBody('voltage_source'), pads: partPads('voltage_source'), isPlaced: true },
+        { id: 'G1', componentId: 'G1', type: 'gnd', x: 68.0, y: 45.0, rotation: 0, ...partBody('gnd'), pads: partPads('gnd'), isPlaced: true },
+        { id: 'G2', componentId: 'G2', type: 'gnd', x: 68.0, y: 45.0, rotation: 0, ...partBody('gnd'), pads: partPads('gnd'), isPlaced: true },
+        { id: 'G3', componentId: 'G3', type: 'gnd', x: 68.0, y: 45.0, rotation: 0, ...partBody('gnd'), pads: partPads('gnd'), isPlaced: true }
       ];
 
       commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [], pours: [] } }, 'replace');
@@ -229,13 +93,13 @@ function App() {
     } else if (presetName === 'ledFlasher') {
       // BJT LED Astable Multivibrator or simple Transistor Switch Flasher
       const comps: SchematicComponent[] = [
-        { id: 'Q1', type: 'transistor_npn', name: 'Q1', value: '2N2222', x: 450, y: 250, rotation: 0, pins: getPinsForType('transistor_npn'), params: { beta: 100 } },
-        { id: 'R1', type: 'resistor', name: 'R_base', value: '4.7k', x: 320, y: 250, rotation: 0, pins: getPinsForType('resistor'), params: { resistance: 4700 } },
-        { id: 'R2', type: 'resistor', name: 'R_limit', value: '330', x: 450, y: 120, rotation: 90, pins: getPinsForType('resistor'), params: { resistance: 330 } },
-        { id: 'LED1', type: 'led', name: 'LED1', value: 'Red', x: 550, y: 120, rotation: 90, pins: getPinsForType('led'), params: {} },
-        { id: 'V1', type: 'voltage_source', name: 'Vcc', value: 'pulse(0,5,2)', x: 180, y: 200, rotation: 270, pins: getPinsForType('voltage_source'), params: { voltage: 5 } },
-        { id: 'G1', type: 'gnd', name: 'GND1', value: 'GND', x: 180, y: 350, rotation: 0, pins: getPinsForType('gnd'), params: {} },
-        { id: 'G2', type: 'gnd', name: 'GND2', value: 'GND', x: 450, y: 380, rotation: 0, pins: getPinsForType('gnd'), params: {} }
+        { id: 'Q1', type: 'transistor_npn', name: 'Q1', value: '2N2222', x: 450, y: 250, rotation: 0, pins: partPins('transistor_npn'), params: { beta: 100 } },
+        { id: 'R1', type: 'resistor', name: 'R_base', value: '4.7k', x: 320, y: 250, rotation: 0, pins: partPins('resistor'), params: { resistance: 4700 } },
+        { id: 'R2', type: 'resistor', name: 'R_limit', value: '330', x: 450, y: 120, rotation: 90, pins: partPins('resistor'), params: { resistance: 330 } },
+        { id: 'LED1', type: 'led', name: 'LED1', value: 'Red', x: 550, y: 120, rotation: 90, pins: partPins('led'), params: {} },
+        { id: 'V1', type: 'voltage_source', name: 'Vcc', value: 'pulse(0,5,2)', x: 180, y: 200, rotation: 270, pins: partPins('voltage_source'), params: { voltage: 5 } },
+        { id: 'G1', type: 'gnd', name: 'GND1', value: 'GND', x: 180, y: 350, rotation: 0, pins: partPins('gnd'), params: {} },
+        { id: 'G2', type: 'gnd', name: 'GND2', value: 'GND', x: 450, y: 380, rotation: 0, pins: partPins('gnd'), params: {} }
       ];
 
       const wires: Wire[] = [
@@ -255,13 +119,13 @@ function App() {
       ];
 
       const footprints: PCBFootprint[] = [
-        { id: 'Q1', componentId: 'Q1', type: 'transistor_npn', x: 40.0, y: 30.0, rotation: 0, ...getFootprintDimensions('transistor_npn'), pads: getPadsForType('transistor_npn'), isPlaced: true },
-        { id: 'R1', componentId: 'R1', type: 'resistor', x: 22.0, y: 18.0, rotation: 0, ...getFootprintDimensions('resistor'), pads: getPadsForType('resistor'), isPlaced: true },
-        { id: 'R2', componentId: 'R2', type: 'resistor', x: 40.0, y: 12.0, rotation: 90, ...getFootprintDimensions('resistor'), pads: getPadsForType('resistor'), isPlaced: true },
-        { id: 'LED1', componentId: 'LED1', type: 'led', x: 58.0, y: 20.0, rotation: 90, ...getFootprintDimensions('led'), pads: getPadsForType('led'), isPlaced: true },
-        { id: 'V1', componentId: 'V1', type: 'voltage_source', x: 12.0, y: 38.0, rotation: 0, ...getFootprintDimensions('voltage_source'), pads: getPadsForType('voltage_source'), isPlaced: true },
-        { id: 'G1', componentId: 'G1', type: 'gnd', x: 68.0, y: 40.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true },
-        { id: 'G2', componentId: 'G2', type: 'gnd', x: 68.0, y: 40.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true }
+        { id: 'Q1', componentId: 'Q1', type: 'transistor_npn', x: 40.0, y: 30.0, rotation: 0, ...partBody('transistor_npn'), pads: partPads('transistor_npn'), isPlaced: true },
+        { id: 'R1', componentId: 'R1', type: 'resistor', x: 22.0, y: 18.0, rotation: 0, ...partBody('resistor'), pads: partPads('resistor'), isPlaced: true },
+        { id: 'R2', componentId: 'R2', type: 'resistor', x: 40.0, y: 12.0, rotation: 90, ...partBody('resistor'), pads: partPads('resistor'), isPlaced: true },
+        { id: 'LED1', componentId: 'LED1', type: 'led', x: 58.0, y: 20.0, rotation: 90, ...partBody('led'), pads: partPads('led'), isPlaced: true },
+        { id: 'V1', componentId: 'V1', type: 'voltage_source', x: 12.0, y: 38.0, rotation: 0, ...partBody('voltage_source'), pads: partPads('voltage_source'), isPlaced: true },
+        { id: 'G1', componentId: 'G1', type: 'gnd', x: 68.0, y: 40.0, rotation: 0, ...partBody('gnd'), pads: partPads('gnd'), isPlaced: true },
+        { id: 'G2', componentId: 'G2', type: 'gnd', x: 68.0, y: 40.0, rotation: 0, ...partBody('gnd'), pads: partPads('gnd'), isPlaced: true }
       ];
 
       commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [], pours: [] } }, 'replace');
@@ -269,12 +133,12 @@ function App() {
     } else if (presetName === 'bandpassFilter') {
       // Opamp Active Bandpass Filter
       const comps: SchematicComponent[] = [
-        { id: 'U1', type: 'opamp', name: 'LM741', value: 'OPAMP', x: 450, y: 250, rotation: 0, pins: getPinsForType('opamp'), params: {} },
-        { id: 'R1', type: 'resistor', name: 'R_in', value: '10k', x: 300, y: 180, rotation: 0, pins: getPinsForType('resistor'), params: { resistance: 10000 } },
-        { id: 'R2', type: 'resistor', name: 'R_feedback', value: '100k', x: 450, y: 100, rotation: 0, pins: getPinsForType('resistor'), params: { resistance: 100000 } },
-        { id: 'C1', type: 'capacitor', name: 'C_in', value: '10n', x: 300, y: 260, rotation: 0, pins: getPinsForType('capacitor'), params: { capacitance: 1e-8 } },
-        { id: 'V1', type: 'voltage_source', name: 'Vin', value: 'sin(0,1,1k)', x: 180, y: 220, rotation: 270, pins: getPinsForType('voltage_source'), params: {} },
-        { id: 'G1', type: 'gnd', name: 'GND', value: 'GND', x: 180, y: 380, rotation: 0, pins: getPinsForType('gnd'), params: {} }
+        { id: 'U1', type: 'opamp', name: 'LM741', value: 'OPAMP', x: 450, y: 250, rotation: 0, pins: partPins('opamp'), params: {} },
+        { id: 'R1', type: 'resistor', name: 'R_in', value: '10k', x: 300, y: 180, rotation: 0, pins: partPins('resistor'), params: { resistance: 10000 } },
+        { id: 'R2', type: 'resistor', name: 'R_feedback', value: '100k', x: 450, y: 100, rotation: 0, pins: partPins('resistor'), params: { resistance: 100000 } },
+        { id: 'C1', type: 'capacitor', name: 'C_in', value: '10n', x: 300, y: 260, rotation: 0, pins: partPins('capacitor'), params: { capacitance: 1e-8 } },
+        { id: 'V1', type: 'voltage_source', name: 'Vin', value: 'sin(0,1,1k)', x: 180, y: 220, rotation: 270, pins: partPins('voltage_source'), params: {} },
+        { id: 'G1', type: 'gnd', name: 'GND', value: 'GND', x: 180, y: 380, rotation: 0, pins: partPins('gnd'), params: {} }
       ];
 
       const wires: Wire[] = [
@@ -284,12 +148,12 @@ function App() {
       ];
 
       const footprints: PCBFootprint[] = [
-        { id: 'U1', componentId: 'U1', type: 'opamp', x: 40.0, y: 28.0, rotation: 0, ...getFootprintDimensions('opamp'), pads: getPadsForType('opamp'), isPlaced: true },
-        { id: 'R1', componentId: 'R1', type: 'resistor', x: 20.0, y: 15.0, rotation: 0, ...getFootprintDimensions('resistor'), pads: getPadsForType('resistor'), isPlaced: true },
-        { id: 'R2', componentId: 'R2', type: 'resistor', x: 40.0, y: 12.0, rotation: 0, ...getFootprintDimensions('resistor'), pads: getPadsForType('resistor'), isPlaced: true },
-        { id: 'C1', componentId: 'C1', type: 'capacitor', x: 60.0, y: 25.0, rotation: 90, ...getFootprintDimensions('capacitor'), pads: getPadsForType('capacitor'), isPlaced: true },
-        { id: 'V1', componentId: 'V1', type: 'voltage_source', x: 12.0, y: 35.0, rotation: 0, ...getFootprintDimensions('voltage_source'), pads: getPadsForType('voltage_source'), isPlaced: true },
-        { id: 'G1', componentId: 'G1', type: 'gnd', x: 68.0, y: 45.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true }
+        { id: 'U1', componentId: 'U1', type: 'opamp', x: 40.0, y: 28.0, rotation: 0, ...partBody('opamp'), pads: partPads('opamp'), isPlaced: true },
+        { id: 'R1', componentId: 'R1', type: 'resistor', x: 20.0, y: 15.0, rotation: 0, ...partBody('resistor'), pads: partPads('resistor'), isPlaced: true },
+        { id: 'R2', componentId: 'R2', type: 'resistor', x: 40.0, y: 12.0, rotation: 0, ...partBody('resistor'), pads: partPads('resistor'), isPlaced: true },
+        { id: 'C1', componentId: 'C1', type: 'capacitor', x: 60.0, y: 25.0, rotation: 90, ...partBody('capacitor'), pads: partPads('capacitor'), isPlaced: true },
+        { id: 'V1', componentId: 'V1', type: 'voltage_source', x: 12.0, y: 35.0, rotation: 0, ...partBody('voltage_source'), pads: partPads('voltage_source'), isPlaced: true },
+        { id: 'G1', componentId: 'G1', type: 'gnd', x: 68.0, y: 45.0, rotation: 0, ...partBody('gnd'), pads: partPads('gnd'), isPlaced: true }
       ];
 
       commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [], pours: [] } }, 'replace');
@@ -297,12 +161,12 @@ function App() {
     } else if (presetName === 'rlcResonant') {
       // Passive RLC Resonant circuit
       const comps: SchematicComponent[] = [
-        { id: 'V1', type: 'voltage_source', name: 'Vin', value: 'sin(0,5,10k)', x: 180, y: 240, rotation: 270, pins: getPinsForType('voltage_source'), params: {} },
-        { id: 'R1', type: 'resistor', name: 'R_series', value: '10', x: 300, y: 140, rotation: 0, pins: getPinsForType('resistor'), params: { resistance: 10 } },
-        { id: 'L1', type: 'inductor', name: 'L_series', value: '1m', x: 450, y: 140, rotation: 0, pins: getPinsForType('inductor'), params: { inductance: 1e-3 } },
-        { id: 'C1', type: 'capacitor', name: 'C_shunt', value: '0.22u', x: 550, y: 240, rotation: 90, pins: getPinsForType('capacitor'), params: { capacitance: 0.22e-6 } },
-        { id: 'G1', type: 'gnd', name: 'GND1', value: 'GND', x: 180, y: 380, rotation: 0, pins: getPinsForType('gnd'), params: {} },
-        { id: 'G2', type: 'gnd', name: 'GND2', value: 'GND', x: 550, y: 380, rotation: 0, pins: getPinsForType('gnd'), params: {} }
+        { id: 'V1', type: 'voltage_source', name: 'Vin', value: 'sin(0,5,10k)', x: 180, y: 240, rotation: 270, pins: partPins('voltage_source'), params: {} },
+        { id: 'R1', type: 'resistor', name: 'R_series', value: '10', x: 300, y: 140, rotation: 0, pins: partPins('resistor'), params: { resistance: 10 } },
+        { id: 'L1', type: 'inductor', name: 'L_series', value: '1m', x: 450, y: 140, rotation: 0, pins: partPins('inductor'), params: { inductance: 1e-3 } },
+        { id: 'C1', type: 'capacitor', name: 'C_shunt', value: '0.22u', x: 550, y: 240, rotation: 90, pins: partPins('capacitor'), params: { capacitance: 0.22e-6 } },
+        { id: 'G1', type: 'gnd', name: 'GND1', value: 'GND', x: 180, y: 380, rotation: 0, pins: partPins('gnd'), params: {} },
+        { id: 'G2', type: 'gnd', name: 'GND2', value: 'GND', x: 550, y: 380, rotation: 0, pins: partPins('gnd'), params: {} }
       ];
 
       const wires: Wire[] = [
@@ -318,12 +182,12 @@ function App() {
       ];
 
       const footprints: PCBFootprint[] = [
-        { id: 'V1', componentId: 'V1', type: 'voltage_source', x: 12.0, y: 28.0, rotation: 0, ...getFootprintDimensions('voltage_source'), pads: getPadsForType('voltage_source'), isPlaced: true },
-        { id: 'R1', componentId: 'R1', type: 'resistor', x: 30.0, y: 15.0, rotation: 0, ...getFootprintDimensions('resistor'), pads: getPadsForType('resistor'), isPlaced: true },
-        { id: 'L1', componentId: 'L1', type: 'inductor', x: 50.0, y: 15.0, rotation: 0, ...getFootprintDimensions('inductor'), pads: getPadsForType('inductor'), isPlaced: true },
-        { id: 'C1', componentId: 'C1', type: 'capacitor', x: 42.0, y: 32.0, rotation: 90, ...getFootprintDimensions('capacitor'), pads: getPadsForType('capacitor'), isPlaced: true },
-        { id: 'G1', componentId: 'G1', type: 'gnd', x: 25.0, y: 45.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true },
-        { id: 'G2', componentId: 'G2', type: 'gnd', x: 60.0, y: 45.0, rotation: 0, ...getFootprintDimensions('gnd'), pads: getPadsForType('gnd'), isPlaced: true }
+        { id: 'V1', componentId: 'V1', type: 'voltage_source', x: 12.0, y: 28.0, rotation: 0, ...partBody('voltage_source'), pads: partPads('voltage_source'), isPlaced: true },
+        { id: 'R1', componentId: 'R1', type: 'resistor', x: 30.0, y: 15.0, rotation: 0, ...partBody('resistor'), pads: partPads('resistor'), isPlaced: true },
+        { id: 'L1', componentId: 'L1', type: 'inductor', x: 50.0, y: 15.0, rotation: 0, ...partBody('inductor'), pads: partPads('inductor'), isPlaced: true },
+        { id: 'C1', componentId: 'C1', type: 'capacitor', x: 42.0, y: 32.0, rotation: 90, ...partBody('capacitor'), pads: partPads('capacitor'), isPlaced: true },
+        { id: 'G1', componentId: 'G1', type: 'gnd', x: 25.0, y: 45.0, rotation: 0, ...partBody('gnd'), pads: partPads('gnd'), isPlaced: true },
+        { id: 'G2', componentId: 'G2', type: 'gnd', x: 60.0, y: 45.0, rotation: 0, ...partBody('gnd'), pads: partPads('gnd'), isPlaced: true }
       ];
 
       commit({ ...project, name: presetName, schematic: { components: comps, wires }, pcbLayout: { boardWidth: 80, boardHeight: 55, footprints, traces: [], vias: [], pours: [] } }, 'replace');
@@ -334,37 +198,10 @@ function App() {
   const handleAddComponent = (type: ComponentType) => {
     // Unique ID based on type count
     if (schematic.components.length >= 128) return;
-    let label = '';
-    switch (type) {
-      case 'resistor': label = 'R'; break;
-      case 'capacitor': label = 'C'; break;
-      case 'inductor': label = 'L'; break;
-      case 'voltage_source': label = 'V'; break;
-      case 'gnd': label = 'GND'; break;
-      case 'diode': label = 'D'; break;
-      case 'led': label = 'LED'; break;
-      case 'transistor_npn': label = 'Q'; break;
-      case 'opamp': label = 'U'; break;
-      case 'timer555': label = 'IC'; break;
-    }
-    const id = nextComponentId(label, schematic);
-
-    let val = '10k';
-    if (type === 'capacitor') val = '100n';
-    if (type === 'inductor') val = '1m';
-    if (type === 'voltage_source') val = '5V';
-    if (type === 'gnd') val = 'GND';
-    if (type === 'diode') val = '1N4148';
-    if (type === 'led') val = 'Red';
-    if (type === 'transistor_npn') val = 'BC547';
-    if (type === 'opamp') val = 'LM358';
-    if (type === 'timer555') val = '555';
-
-    // Parse numeric params
-    const params: Record<string, number> = {};
-    if (type === 'resistor') params.resistance = 10000;
-    if (type === 'capacitor') params.capacitance = 1e-7;
-    if (type === 'inductor') params.inductance = 1e-3;
+    const part = PARTS[type];
+    const id = nextComponentId(part.prefix, schematic);
+    const val = part.value;
+    const params: Record<string, number> = { ...part.params };
 
     // Place at center with slight offset
     const newOffset = (placedOffset + 15) % 120;
@@ -378,12 +215,12 @@ function App() {
       x: 350 + newOffset,
       y: 200 + newOffset,
       rotation: 0,
-      pins: getPinsForType(type),
+      pins: partPins(type),
       params
     };
 
     // Add footprint to PCB Layout
-    const dim = getFootprintDimensions(type);
+    const dim = partBody(type);
     const newFootprint: PCBFootprint = {
       id,
       componentId: id,
@@ -393,7 +230,7 @@ function App() {
       rotation: 0,
       width: dim.width,
       height: dim.height,
-      pads: getPadsForType(type),
+      pads: partPads(type),
       isPlaced: true
     };
 

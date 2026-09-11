@@ -121,6 +121,17 @@ export function computeConductivityGrid(
     });
   });
 
+  // 3. A via is a plated barrel through the entire board: the one feature that really is the
+  //    column of copper this 2D model treats every copper cell as. An array of them under a
+  //    hot part is the standard way to pull heat to the other side.
+  for (const via of layout.vias) {
+    const col = Math.floor(via.x / cellSizeMm);
+    const row = Math.floor(via.y / cellSizeMm);
+    if (col >= 0 && col < widthCells && row >= 0 && row < heightCells) {
+      conductivity[row * widthCells + col] = 390.0;
+    }
+  }
+
   return conductivity;
 }
 

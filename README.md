@@ -18,7 +18,8 @@ AURA PCB is a research-grade, browser-based EDA (Electronic Design Automation) a
 
 ### 3. SPICE Simulation Engine
 - **Custom MNA (Modified Nodal Analysis) Solver**: Built-in linear and non-linear solver ($G \cdot v + C \cdot \frac{dv}{dt} = i$) using Newton-Raphson iteration.
-- **Support for Advanced Parts**: Models resistors, capacitors, inductors, diodes, LEDs, NPN BJTs, op-amps, and behaviorally models the 555 Timer.
+- **Support for Advanced Parts**: Models resistors, capacitors, inductors, potentiometers, diodes, Zener diodes, LEDs, NPN BJTs, N-channel MOSFETs and op-amps, and behaviorally models the 555 Timer.
+- **One Part Table**: Every per-type fact — library entry, reference prefix, default value and parameters, schematic terminals and footprint lands — lives in `src/project/parts.ts`. A new component type becomes placeable, exportable and simulatable by being declared once rather than by being added to six separate switch statements.
 - **Digital Oscilloscope Scope**: Probes multiple node voltages dynamically over time with interactive coordinate reading on hover.
 
 ### 4. 2D Finite-Difference Thermal Solver
@@ -42,7 +43,7 @@ AURA PCB is a research-grade, browser-based EDA (Electronic Design Automation) a
 - **Gerber RS-274X (X2)**: Two copper layers, soldermask, legend, paste and board outline, in 4.6 absolute millimetre format with layer function attributes.
 - **Excellon Drill**: Metric, explicit decimals, one tool per distinct diameter.
 - **Pick-and-place Centroid**: Surface-mount parts only, in the same coordinate frame as the copper.
-- **SPICE Netlist**: Exports the captured circuit as a deck whose values follow the built-in solver, and reports every device that could not be translated exactly rather than emitting a card that merely looks right.
+- **SPICE Netlist, both ways**: Exports the captured circuit as a deck whose values follow the built-in solver, and reports every device that could not be translated exactly rather than emitting a card that merely looks right. Imports a deck back — its own or a hand-written one — honouring comments, continuation lines and `.model` parameters (a diode with a breakdown voltage becomes a Zener; a MOSFET keeps its threshold and transconductance), and names every device it had to skip or approximate.
 - Every package ships a notes file stating what it does and does not cover. None of it is a design rule check; review it in a CAM viewer before ordering.
 
 ### 8. Research Lab Panel
@@ -72,9 +73,10 @@ src/
 ├── export/
 │   └── gerber.ts               # RS-274X, Excellon drill, centroid & package notes
 ├── interchange/
-│   └── spiceNetlist.ts         # SPICE deck export with explicit translation caveats
+│   └── spiceNetlist.ts         # SPICE deck export and import, with explicit translation notes
 ├── project/
 │   ├── connectivity.ts         # Union-find net naming & copper reconciliation
+│   ├── parts.ts                # The part table: pins, pads, defaults, library metadata
 │   ├── history.ts              # Undo/redo reducer with edit coalescing
 │   ├── projectFile.ts          # Bounded, validated project document & BOM export
 │   └── useProject.ts           # Autosave, local recovery and commit hooks

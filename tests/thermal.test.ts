@@ -95,3 +95,21 @@ test('doubling the convection coefficient halves the temperature rise', () => {
   const fast = riseAt(CONVECTION * 2);
   assert.ok(Math.abs(fast - slow / 2) < 0.5, `rise ${slow.toFixed(2)}C should halve to ${(slow / 2).toFixed(2)}C, got ${fast.toFixed(2)}C`);
 });
+
+test('a via array pulls heat away from a part that bare substrate would let cook', () => {
+  // A line of vias from the part toward the board edge, the way a thermal via array is laid.
+  const vias = Array.from({ length: 10 }, (_, index) => ({
+    id: `v${index}`, net: 'GND', x: 20 + index * 1.5, y: 10, diameter: 0.8, drillDiameter: 0.4,
+  }));
+  const conductivity = computeConductivityGrid(layout(), COLS, ROWS, CELL);
+  const viaCell = computeConductivityGrid({ ...layout(), vias }, COLS, ROWS, CELL)[Math.floor(10 / CELL) * COLS + Math.floor(27.5 / CELL)];
+  assert.equal(viaCell, 390, 'a via cell is copper');
+  assert.ok(Math.abs(conductivity[Math.floor(10 / CELL) * COLS + Math.floor(27.5 / CELL)] - 0.3) < 1e-6, 'without the via it is substrate');
+
+  const source = [{ x: 20, y: 10, power: 1, radius: 2 }];
+  const bare = settle(layout(), source);
+  const stitched = settle({ ...layout(), vias }, source);
+  assert.ok(stitched.peak < bare.peak, `vias must lower the hot spot: ${stitched.peak.toFixed(0)}C vs ${bare.peak.toFixed(0)}C`);
+  // The same power still leaves the board; vias move heat, they do not remove it.
+  assert.ok(Math.abs(stitched.mean - bare.mean) < 0.5);
+});

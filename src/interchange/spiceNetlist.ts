@@ -1,6 +1,7 @@
-import type { SchematicComponent, SchematicData, SimSettings } from '../types/pcb';
+import type { ComponentType, SchematicComponent, SchematicData, SimSettings, Wire } from '../types/pcb';
 import { parseValue } from '../simulation/spiceSolver';
 import { applyConnectivityNets } from '../project/connectivity';
+import { PARTS, partPins } from '../project/parts';
 
 export interface SpiceExport {
   netlist: string;
@@ -108,7 +109,8 @@ export function exportSpiceNetlist(
 
   const LETTERS: Partial<Record<SchematicComponent['type'], string>> = {
     resistor: 'R', capacitor: 'C', inductor: 'L', voltage_source: 'V',
-    diode: 'D', led: 'D', transistor_npn: 'Q', opamp: 'X', timer555: 'X',
+    diode: 'D', led: 'D', zener: 'D', transistor_npn: 'Q', mosfet_n: 'M',
+    potentiometer: 'R', opamp: 'X', timer555: 'X',
   };
   const claimed = new Set<string>();
   const references = new Map<string, string>();
@@ -120,6 +122,13 @@ export function exportSpiceNetlist(
     references.set(component.id, name);
   }
   const ref = (component: SchematicComponent) => references.get(component.id) ?? scrub(component.id);
+  /** For parts that need more than one card, so the extra names cannot collide with a device. */
+  const claimRef = (base: string) => {
+    let name = base;
+    for (let n = 2; claimed.has(name.toUpperCase()); n++) name = `${base}_${n}`;
+    claimed.add(name.toUpperCase());
+    return name;
+  };
 
   const passive = (component: SchematicComponent, a: string, b: string) => {
     const value = parseValue(component.value);
@@ -134,7 +143,8 @@ export function exportSpiceNetlist(
   const REQUIRED: Partial<Record<SchematicComponent['type'], string[]>> = {
     resistor: ['1', '2'], capacitor: ['1', '2'], inductor: ['1', '2'],
     voltage_source: ['p', 'n'], diode: ['a', 'c'], led: ['a', 'c'],
-    transistor_npn: ['b', 'c', 'e'],
+    transistor_npn: ['b', 'c', 'e'], zener: ['a', 'c'], mosfet_n: ['g', 'd', 's'],
+    potentiometer: ['1', '2', '3'],
     opamp: ['in+', 'in-', 'out', 'v+', 'v-'],
     timer555: ['1', '2', '3', '4', '5', '6', '7', '8'],
   };
@@ -170,6 +180,35 @@ export function exportSpiceNetlist(
         models.add('.model AURA_NPN NPN(IS=1e-14 BF=100)');
         cards.push(`${ref(component)} ${nodeOf(component, 'c')} ${nodeOf(component, 'b')} ${nodeOf(component, 'e')} AURA_NPN`);
         break;
+      case 'zener': {
+        // The solver reads the breakdown voltage off the value string and falls back to 5.1 V.
+        const stated = parseValue(component.value);
+        const breakdown = Number.isFinite(stated) && stated > 0 ? stated : 5.1;
+        const model = `AURA_ZD_${numeric(breakdown).replace(/[^0-9]+/g, '_')}`;
+        models.add(`.model ${model} D(IS=1e-14 N=1 BV=${numeric(breakdown)})`);
+        cards.push(`${ref(component)} ${nodeOf(component, 'a')} ${nodeOf(component, 'c')} ${model}`);
+        break;
+      }
+      case 'mosfet_n': {
+        const threshold = component.params.vth ?? 2;
+        const transconductance = component.params.kn ?? 0.05;
+        const model = `AURA_NMOS_${`${numeric(threshold)}_${numeric(transconductance)}`.replace(/[^0-9]+/g, '_')}`;
+        models.add(`.model ${model} NMOS(VTO=${numeric(threshold)} KP=${numeric(transconductance)})`);
+        // A SPICE MOSFET takes four nodes. This model carries no separate bulk, so it ties to
+        // the source, which is what a discrete part does anyway.
+        const source = nodeOf(component, 's');
+        cards.push(`${ref(component)} ${nodeOf(component, 'd')} ${nodeOf(component, 'g')} ${source} ${source} ${model}`);
+        break;
+      }
+      case 'potentiometer': {
+        const stated = parseValue(component.value);
+        const track = Number.isFinite(stated) && stated > 0 ? stated : 10000;
+        const wiper = Math.max(0.01, Math.min(0.99, (component.params.position ?? 50) / 100));
+        // One track split at the wiper into two resistors, exactly as the solver stamps it.
+        cards.push(`${claimRef(`${ref(component)}A`)} ${nodeOf(component, '1')} ${nodeOf(component, '2')} ${numeric(Math.max(0.1, track * wiper))}`);
+        cards.push(`${claimRef(`${ref(component)}B`)} ${nodeOf(component, '2')} ${nodeOf(component, '3')} ${numeric(Math.max(0.1, track * (1 - wiper)))}`);
+        break;
+      }
       case 'opamp':
         subcircuits.add('opamp');
         caveats.push(`${component.id}: the op-amp is behavioural in AURA. The exported subcircuit keeps the 1e5 gain but not the supply clamp.`);
@@ -220,4 +259,278 @@ export function exportSpiceNetlist(
   ].join('\n');
 
   return { netlist, caveats };
+}
+
+// --- Import ----------------------------------------------------------------
+
+export interface SpiceImport {
+  schematic: SchematicData;
+  /** Everything skipped or approximated, so nothing is lost without being said. */
+  warnings: string[];
+}
+
+const MAX_NETLIST_BYTES = 512_000;
+const MAX_LINE_LENGTH = 4096;
+const MAX_DEVICES = 128;
+const RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** Device letter to the part this project models, and how many nodes its card carries. */
+const CARDS: Record<string, { type: ComponentType; nodes: number }> = {
+  R: { type: 'resistor', nodes: 2 }, C: { type: 'capacitor', nodes: 2 }, L: { type: 'inductor', nodes: 2 },
+  V: { type: 'voltage_source', nodes: 2 }, D: { type: 'diode', nodes: 2 },
+  Q: { type: 'transistor_npn', nodes: 3 }, M: { type: 'mosfet_n', nodes: 4 },
+};
+/** Subcircuits this project emits itself, so its own decks come back whole. */
+const SUBCIRCUITS: Record<string, { type: ComponentType; pins: string[] }> = {
+  AURA_OPAMP: { type: 'opamp', pins: ['in+', 'in-', 'out', 'v+', 'v-'] },
+  AURA_555: { type: 'timer555', pins: ['1', '2', '3', '4', '5', '6', '7', '8'] },
+};
+
+const identifier = (raw: string, fallback: string) => {
+  const cleaned = raw.replace(/[^\w.+-]/g, '_').slice(0, 60);
+  return cleaned && !RESERVED.has(cleaned) ? cleaned : fallback;
+};
+
+/** A SPICE source carries more than this project models; name whatever is dropped. */
+function readSource(rest: string[], name: string, warnings: string[]): string {
+  const text = rest.join(' ').trim();
+  const wave = /^(SIN|PULSE)\s*\(([^)]*)\)$/i.exec(text);
+  if (wave) {
+    const args = wave[2].split(/[\s,]+/).filter(Boolean).map(parseValue);
+    if (!args.length || args.some(value => !Number.isFinite(value))) {
+      warnings.push(`${name}: could not read "${text}"; imported as 0 V DC.`);
+      return '0';
+    }
+    if (wave[1].toUpperCase() === 'SIN') {
+      if (args.length < 3) {
+        warnings.push(`${name}: SIN needs an offset, amplitude and frequency; imported as 0 V DC.`);
+        return '0';
+      }
+      if (args.length > 3) warnings.push(`${name}: SIN delay, damping and phase are not modelled and were dropped.`);
+      return `sin(${numeric(args[0])},${numeric(args[1])},${numeric(args[2])})`;
+    }
+    // PULSE(v1 v2 td tr tf pw per). This project models an ideal 50% square at one frequency.
+    if (args.length < 7 || !(args[6] > 0)) {
+      warnings.push(`${name}: PULSE needs a period to become a frequency; imported as 0 V DC.`);
+      return '0';
+    }
+    warnings.push(`${name}: PULSE delay, edge rates and duty are not modelled; imported as an ideal 50% square wave.`);
+    return `pulse(${numeric(args[0])},${numeric(args[1])},${numeric(1 / args[6])})`;
+  }
+  if (/^AC\b/i.test(text)) warnings.push(`${name}: AC analysis is not supported; only the DC level was kept.`);
+  const dc = text.replace(/^DC\s+/i, '').split(/\s+/)[0] ?? '';
+  if (!Number.isFinite(parseValue(dc))) {
+    warnings.push(`${name}: "${text}" is not a source this project models; imported as 0 V DC.`);
+    return '0';
+  }
+  return dc;
+}
+
+/** Fold comments and continuations away, leaving one card per entry. */
+function logicalLines(text: string): { text: string; line: number }[] {
+  const lines: { text: string; line: number }[] = [];
+  text.split(/\r?\n/).forEach((raw, index) => {
+    if (raw.length > MAX_LINE_LENGTH) throw new Error(`Line ${index + 1} exceeds ${MAX_LINE_LENGTH} characters.`);
+    const stripped = raw.replace(/;.*$/, '').trim();
+    if (!stripped || stripped.startsWith('*')) return;
+    if (stripped.startsWith('+') && lines.length) {
+      lines[lines.length - 1].text += ` ${stripped.slice(1).trim()}`;
+      return;
+    }
+    lines.push({ text: stripped, line: index + 1 });
+  });
+  return lines;
+}
+
+/**
+ * Read a SPICE deck back into a schematic this project can edit and simulate.
+ *
+ * The input is treated as hostile: it is bounded, every name is scrubbed before it reaches an
+ * object key, and anything not understood is reported rather than guessed at. Devices this
+ * project has no model for are skipped with a warning instead of being approximated into
+ * something that would simulate but mean nothing.
+ */
+export function importSpiceNetlist(text: string): SpiceImport {
+  if (new TextEncoder().encode(text).length > MAX_NETLIST_BYTES) {
+    throw new Error(`Netlists are limited to ${MAX_NETLIST_BYTES / 1000} KB.`);
+  }
+  const warnings: string[] = [];
+  const lines = logicalLines(text);
+  if (!lines.length) throw new Error('That file contains no SPICE cards.');
+
+  // Models are read first because a device card can reference one declared after it.
+  const models = new Map<string, { kind: string; params: Map<string, number> }>();
+  for (const { text: line } of lines) {
+    const model = /^\.model\s+(\S+)\s+([A-Za-z]+)\s*(?:\(([^)]*)\))?/i.exec(line);
+    if (!model) continue;
+    const params = new Map<string, number>();
+    for (const [, key, value] of (model[3] ?? '').matchAll(/([A-Za-z]+)\s*=\s*(\S+)/g)) {
+      const parsed = parseValue(value);
+      if (Number.isFinite(parsed)) params.set(key.toUpperCase(), parsed);
+    }
+    models.set(model[1].toUpperCase(), { kind: model[2].toUpperCase(), params });
+  }
+
+  interface Device { id: string; type: ComponentType; value: string; params: Record<string, number>; nodes: string[]; pins: string[] }
+  const devices: Device[] = [];
+  const usedIds = new Set<string>();
+  const claim = (raw: string, fallback: string) => {
+    const base = identifier(raw, fallback);
+    let id = base;
+    for (let n = 2; usedIds.has(id); n++) id = `${base}_${n}`;
+    usedIds.add(id);
+    return id;
+  };
+
+  lines.forEach(({ text: line, line: lineNumber }, index) => {
+    if (line.startsWith('.')) {
+      if (/^\.(model|tran|end|ends|title|options|option|op|probe|print|plot|width|temp)\b/i.test(line)) return;
+      warnings.push(`Line ${lineNumber}: "${line.split(/\s+/)[0]}" is not supported and was ignored.`);
+      return;
+    }
+    const parts = line.split(/\s+/);
+    const name = parts[0];
+    const letter = name[0]?.toUpperCase() ?? '';
+    const rest = parts.slice(1);
+    const shape = CARDS[letter];
+
+    // SPICE reads the first line of a deck as its title, whatever it says, and so does this.
+    // The one concession is that a first line which validates strictly as an R, C, L or V
+    // card is kept, since those can be checked numerically. Prose beginning with a device
+    // letter ("RC filter", "Voltage divider", "Common emitter") is far too common to warn on.
+    if (index === 0) {
+      const tail = shape ? rest.slice(shape.nodes) : [];
+      const strict = letter === 'X'
+        ? rest.length >= 2 && Boolean(SUBCIRCUITS[rest.at(-1)?.toUpperCase() ?? ''])
+        : Boolean(shape) && rest.length > (shape?.nodes ?? 0) && (
+          'RCL'.includes(letter) ? Number.isFinite(parseValue(tail[0] ?? ''))
+            : letter === 'V' ? /^(DC\b|AC\b|SIN\b|PULSE\b|[+-]?[\d.])/i.test(tail.join(' '))
+              : false);
+      if (!strict) return;
+    }
+
+    if (letter === 'X') {
+      const subcircuit = SUBCIRCUITS[rest.at(-1)?.toUpperCase() ?? ''];
+      if (!subcircuit) {
+        warnings.push(`Line ${lineNumber}: subcircuit "${rest.at(-1) ?? name}" has no model here and was skipped.`);
+        return;
+      }
+      const nodes = rest.slice(0, -1);
+      if (nodes.length !== subcircuit.pins.length) {
+        warnings.push(`Line ${lineNumber}: ${name} has ${nodes.length} nodes, expected ${subcircuit.pins.length}; skipped.`);
+        return;
+      }
+      devices.push({ id: claim(name, `X${devices.length + 1}`), type: subcircuit.type, value: PARTS[subcircuit.type].value, params: {}, nodes, pins: subcircuit.pins });
+      return;
+    }
+
+    if (!shape) {
+      warnings.push(`Line ${lineNumber}: "${name}" is not a device this project models and was skipped.`);
+      return;
+    }
+    if (rest.length < shape.nodes) {
+      warnings.push(`Line ${lineNumber}: ${name} needs ${shape.nodes} nodes; skipped.`);
+      return;
+    }
+    const nodes = rest.slice(0, shape.nodes);
+    const tail = rest.slice(shape.nodes);
+    let type = shape.type;
+    let value = PARTS[type].value;
+    const params: Record<string, number> = { ...PARTS[type].params };
+
+    if (letter === 'R' || letter === 'C' || letter === 'L') {
+      const parsed = parseValue(tail[0] ?? '');
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        warnings.push(`Line ${lineNumber}: ${name} has no readable value; imported as ${value}.`);
+      } else {
+        value = tail[0];
+      }
+    } else if (letter === 'V') {
+      value = readSource(tail, name, warnings);
+    } else if (letter === 'D') {
+      const modelName = tail[0]?.toUpperCase() ?? '';
+      const breakdown = models.get(modelName)?.params.get('BV');
+      // A diode with a breakdown voltage is a zener, which this project models separately.
+      if (breakdown && breakdown > 0) { type = 'zener'; value = `${numeric(breakdown)}V`; }
+      else if (modelName === 'AURA_LED') { type = 'led'; value = PARTS.led.value; }
+      // This project's own model names describe its solver, not a part, so they are not values.
+      else if (tail[0] && !modelName.startsWith('AURA_')) value = tail[0];
+    } else if (letter === 'Q') {
+      if (tail[0] && !tail[0].toUpperCase().startsWith('AURA_')) value = tail[0];
+    } else if (letter === 'M') {
+      const model = models.get(tail[0]?.toUpperCase() ?? '');
+      if (tail[0] && !tail[0].toUpperCase().startsWith('AURA_')) value = tail[0];
+      const threshold = model?.params.get('VTO');
+      const transconductance = model?.params.get('KP');
+      if (threshold !== undefined) params.vth = threshold;
+      if (transconductance !== undefined) params.kn = transconductance;
+      // A SPICE MOSFET has a bulk node this project does not model.
+      if (nodes[3] !== nodes[2]) warnings.push(`${name}: the bulk node is not modelled and was tied to the source.`);
+    }
+
+    // Card order is the SPICE convention: Q is collector, base, emitter; M is drain, gate,
+    // source, bulk. Every other part reads its nodes in the order the library lists its pins.
+    const pins = letter === 'Q' ? ['c', 'b', 'e'] : letter === 'M' ? ['d', 'g', 's'] : PARTS[type].pins.map(pin => pin.id);
+    devices.push({ id: claim(name, `${letter}${devices.length + 1}`), type, value, params, nodes: nodes.slice(0, pins.length), pins });
+  });
+
+  if (!devices.length) throw new Error('No devices in that netlist could be imported.');
+  if (devices.length > MAX_DEVICES) throw new Error(`Netlists are limited to ${MAX_DEVICES} devices.`);
+
+  // Lay the circuit out on a readable grid; the user can arrange it properly afterwards.
+  const COLUMNS = 6;
+  const SPACING_X = 170;
+  const SPACING_Y = 150;
+  const components: SchematicComponent[] = devices.map((device, index) => ({
+    id: device.id, type: device.type, name: device.id, value: device.value,
+    x: 140 + (index % COLUMNS) * SPACING_X,
+    y: 140 + Math.floor(index / COLUMNS) * SPACING_Y,
+    rotation: 0, pins: partPins(device.type), params: device.params,
+  }));
+
+  const wires: Wire[] = [];
+  const byNode = new Map<string, { compId: string; pinId: string }[]>();
+  devices.forEach(device => device.pins.forEach((pinId, position) => {
+    const node = device.nodes[position];
+    if (node === undefined) return;
+    byNode.set(node, [...(byNode.get(node) ?? []), { compId: device.id, pinId }]);
+  }));
+
+  let grounds = 0;
+  for (const [node, terminals] of byNode) {
+    if (node === '0') {
+      // Every grounded terminal gets its own symbol, the way the reference circuits are drawn.
+      for (const terminal of terminals) {
+        const owner = components.find(component => component.id === terminal.compId);
+        const id = claim(`GND${++grounds}`, `GND_${grounds}`);
+        components.push({
+          id, type: 'gnd', name: id, value: PARTS.gnd.value,
+          x: owner ? owner.x : 140, y: owner ? owner.y + 90 : 140,
+          rotation: 0, pins: partPins('gnd'), params: {},
+        });
+        wires.push({ id: `w${wires.length + 1}`, fromCompId: terminal.compId, fromPinId: terminal.pinId, toCompId: id, toPinId: 'gnd', points: [], net: '' });
+      }
+      continue;
+    }
+    // A star from the first terminal is the fewest wires that put a whole node on one net.
+    for (const terminal of terminals.slice(1)) {
+      wires.push({ id: `w${wires.length + 1}`, fromCompId: terminals[0].compId, fromPinId: terminals[0].pinId, toCompId: terminal.compId, toPinId: terminal.pinId, points: [], net: '' });
+    }
+  }
+
+  if (!grounds) warnings.push('This deck has no node 0, so no ground was created. Simulation needs one.');
+
+  // Give every wire the same orthogonal route the editor draws by hand, so the imported
+  // schematic is readable at once rather than a web of diagonals.
+  const pinAt = (componentId: string, pinId: string) => {
+    const component = components.find(candidate => candidate.id === componentId);
+    const pin = component?.pins.find(candidate => candidate.id === pinId);
+    return component && pin ? { x: component.x + pin.relX, y: component.y + pin.relY } : null;
+  };
+  for (const link of wires) {
+    const start = pinAt(link.fromCompId, link.fromPinId);
+    const end = pinAt(link.toCompId, link.toPinId);
+    if (start && end) link.points = [start, { x: end.x, y: start.y }, end];
+  }
+  return { schematic: { components, wires }, warnings };
 }

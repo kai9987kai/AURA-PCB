@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { exportSpiceNetlist } from '../src/interchange/spiceNetlist.ts';
 import { parseValue } from '../src/simulation/spiceSolver.ts';
+import { PARTS, PART_TYPES } from '../src/project/parts.ts';
 import type { ComponentType, SchematicComponent, SchematicData, Wire } from '../src/types/pcb.ts';
 
 const part = (id: string, type: ComponentType, value: string, pins: string[]): SchematicComponent => ({
@@ -130,10 +131,27 @@ test('behavioural parts are flagged and never pass as faithful models', () => {
   assert.ok(timer.caveats.some(note => note.includes('will not oscillate')), timer.caveats.join(' | '));
 });
 
-test('a part with no card is dropped loudly, not quietly', () => {
-  const { netlist, caveats } = exportSpiceNetlist(divider({ components: [part('M1', 'mosfet_n', '2N7000', ['g', 'd', 's'])] }));
-  assert.ok(!cards(netlist).some(card => card.includes('M1')), 'no card may be invented for it');
-  assert.ok(caveats.some(note => note.includes('M1') && note.includes('omitted')), caveats.join(' | '));
+test('every part the library offers reaches the deck', () => {
+  // Three component types were once understood by the solver and by nothing else, so they
+  // could be simulated but never placed or exported. This is the check that catches the next one.
+  for (const type of PART_TYPES) {
+    if (type === 'gnd') continue;
+    const definition = PARTS[type];
+    const component = {
+      ...part('X1', type, definition.value, definition.pins.map(terminal => terminal.id)),
+      params: { ...definition.params },
+    };
+    const { netlist, caveats } = exportSpiceNetlist(divider({ components: [component] }));
+    assert.ok(!caveats.some(note => note.includes('omitted')), `${type} was omitted: ${caveats.join(' | ')}`);
+    assert.ok(cards(netlist).some(card => card.includes('X1')), `${type} produced no card`);
+  }
+});
+
+test('a type with no card is still dropped loudly rather than quietly', () => {
+  const unknown = { ...part('Z9', 'resistor', '1k', ['1', '2']), type: 'not_a_real_part' as ComponentType };
+  const { netlist, caveats } = exportSpiceNetlist(divider({ components: [unknown] }));
+  assert.ok(!cards(netlist).some(card => card.includes('Z9')), 'no card may be invented for it');
+  assert.ok(caveats.some(note => note.includes('Z9') && note.includes('omitted')), caveats.join(' | '));
 });
 
 test('the deck is framed as SPICE expects and carries the requested analysis', () => {

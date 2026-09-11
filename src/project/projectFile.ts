@@ -1,5 +1,6 @@
 import type { ComponentType, PCBLayoutData, SchematicData } from '../types/pcb';
 import { reconcileCopper } from './connectivity';
+import { partBody, partPads } from './parts';
 
 export interface Project { name: string; schematic: SchematicData; pcbLayout: PCBLayoutData }
 export const MAX_FILE_BYTES = 2_000_000;
@@ -84,6 +85,28 @@ export function parseProject(contents: string): Project {
   const schematic = { components, wires };
   const layout = { boardWidth: number(pcb.boardWidth, 'board width', 10, 500), boardHeight: number(pcb.boardHeight, 'board height', 10, 500), footprints, traces, vias, pours };
   return { name: text(data.name, 'project name', 80), ...reconcileCopper(schematic, schematic, layout) };
+}
+
+/**
+ * A whole project around a bare schematic, as an importer produces. Every part gets its
+ * library footprint on a grid coarse enough to clear the widest body, and the board grows to
+ * hold them; the user lays it out properly afterwards.
+ */
+export function projectFromSchematic(name: string, schematic: SchematicData): Project {
+  const columns = 8;
+  const pitch = 15;
+  const rows = Math.ceil(schematic.components.length / columns);
+  const footprints = schematic.components.map((component, index) => ({
+    id: component.id, componentId: component.id, type: component.type,
+    x: 10 + (index % columns) * pitch, y: 10 + Math.floor(index / columns) * pitch, rotation: 0,
+    ...partBody(component.type), pads: partPads(component.type), isPlaced: true,
+  }));
+  const layout: PCBLayoutData = {
+    boardWidth: Math.min(500, Math.max(80, columns * pitch + 5)),
+    boardHeight: Math.min(500, Math.max(55, rows * pitch + 5)),
+    footprints, traces: [], vias: [], pours: [],
+  };
+  return { name: name.slice(0, 80) || 'Imported circuit', ...reconcileCopper(schematic, schematic, layout) };
 }
 
 export function serializeProject(project: Project) {
