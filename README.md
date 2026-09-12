@@ -1,6 +1,6 @@
 # AURA PCB Design Suite
 
-AURA PCB is a research-grade, browser-based EDA (Electronic Design Automation) and physics-informed CAD suite. It integrates schematic capture, grid-snapped board layout, real-time SPICE-like circuit simulation, 2D finite-difference thermal diffusion solvers, transmission-line signal integrity solvers, and a photorealistic 3D WebGL board renderer into a dark-themed React application.
+AURA PCB is a browser-based EDA (Electronic Design Automation) workspace for circuit exploration and preliminary board analysis. It integrates schematic capture, grid-snapped board layout, real-time SPICE-like circuit simulation, 2D finite-difference thermal diffusion solvers, transmission-line signal integrity solvers, and a photorealistic 3D WebGL board renderer into a dark-themed React application.
 
 ---
 
@@ -13,13 +13,14 @@ AURA PCB is a research-grade, browser-based EDA (Electronic Design Automation) a
 ### 2. 2D PCB Layout Editor
 - **Manual & Auto-routing**: Route copper traces manually with automatic multi-segment snapping and via placement, or utilize **Lee's Grid Autorouter** (BFS pathfinder on a 1mm routing grid).
 - **Ratsnest Airwires**: Visualizes missing connections to guide trace layout.
-- **Copper Pours**: Flood either layer with a ground plane. The pour is a real board object, not a preview: it joins same-net copper that falls inside it, so a ground net can be completed by a plane instead of traces, and it is written into the Gerber as a filled region with every other net cleared out of it in negative polarity.
+- **Copper Pours**: Flood either layer with a ground plane. The pour is a real board object, not a preview: it counts only same-net contacts joined by verified paths around clearance cuts; disconnected islands cannot complete a ground net, and it is written into the Gerber as a filled region with every other net cleared out of it in negative polarity.
 - **Real-Time DRC (Design Rule Checker)**: Flags trace width clearance (min 0.20mm) and overlap errors (min 0.25mm spacing) with red target rings.
 
 ### 3. SPICE Simulation Engine
 - **Custom MNA (Modified Nodal Analysis) Solver**: Built-in linear and non-linear solver ($G \cdot v + C \cdot \frac{dv}{dt} = i$) using Newton-Raphson iteration.
 - **Support for Advanced Parts**: Models resistors, capacitors, inductors, potentiometers, diodes, Zener diodes, LEDs, NPN BJTs, N-channel MOSFETs and op-amps, and behaviorally models the 555 Timer.
-- **One Part Table**: Every per-type fact — library entry, reference prefix, default value and parameters, schematic terminals and footprint lands — lives in `src/project/parts.ts`. A new component type becomes placeable, exportable and simulatable by being declared once rather than by being added to six separate switch statements.
+- **One Part Table**: Every per-type fact — library entry, reference prefix, default value and parameters, schematic terminals and footprint lands — lives in `src/project/parts.ts`. The table drives placement and metadata; new electrical behavior still requires solver stamps, interchange handling, and validation.
+- **Frequency Spectrum**: Probe a node in the scope to see periodic-Hann RMS dBV, DC, dominant AC, sample rate and resolution. CSV export retains frequency/amplitude pairs. The last contiguous native-rate record is used, with no hidden downsampling; harmonic ratio is withheld for unresolved or off-bin tones.
 - **Digital Oscilloscope Scope**: Probes multiple node voltages dynamically over time with interactive coordinate reading on hover.
 
 ### 4. 2D Finite-Difference Thermal Solver
@@ -31,8 +32,9 @@ AURA PCB is a research-grade, browser-based EDA (Electronic Design Automation) a
 
 ### 5. High-Speed Signal Integrity Analyzer
 - **Impedance Solver**: Computes characteristic impedance ($Z_0$) with the Hammerstad-Jensen quasi-static microstrip model, including the finite conductor-thickness correction. It assumes a uniform external microstrip over a continuous reference plane, which the board editor does not itself model or verify.
+- **Saved Board Setup**: Board dimensions and six SI inputs persist through save/reload, undo/redo, and Research Lab reports. SI inputs may also be saved from the detailed panel.
 - **Reflections Ringing Simulator**: Models transmission-line reflection effects at high frequencies when edge rates are fast relative to propagation delay. Plot outputs on a dedicated ringing scope.
-- **Crosstalk Estimator**: Calculates electromagnetic coupling to adjacent parallel traces (crosstalk peak voltage in mV).
+- **Crosstalk Estimator**: Reports a heuristic coupling indicator from parallel overlap of different nets on the same layer; it is not calibrated noise voltage.
 
 ### 6. Photorealistic 3D WebGL Viewer
 - **Three.js Substrate Rendering**: Realistic board rendering with soldermask color picking (Emerald Green, Slate Blue, Matte Black) and multilayer stackup view.
@@ -44,6 +46,7 @@ AURA PCB is a research-grade, browser-based EDA (Electronic Design Automation) a
 - **Excellon Drill**: Metric, explicit decimals, one tool per distinct diameter.
 - **Pick-and-place Centroid**: Surface-mount parts only, in the same coordinate frame as the copper.
 - **SPICE Netlist, both ways**: Exports the captured circuit as a deck whose values follow the built-in solver, and reports every device that could not be translated exactly rather than emitting a card that merely looks right. Imports a deck back — its own or a hand-written one — honouring comments, continuation lines and `.model` parameters (a diode with a breakdown voltage becomes a Zener; a MOSFET keeps its threshold and transconductance), and names every device it had to skip or approximate.
+- **Preview and ZIP**: Preview is drawn from the actual generated Gerber aperture/polarity commands. Download the complete package in one ZIP or individual files.
 - Every package ships a notes file stating what it does and does not cover. None of it is a design rule check; review it in a CAM viewer before ordering.
 
 ### 8. Research Lab Panel
@@ -97,14 +100,14 @@ src/
 ## Getting Started
 
 ### Prerequisites
-- Node.js (v18+)
+- Node.js 20.19+ on the 20.x line, or 22.12+ (see `package.json`)
 - npm
 
 ### Installation
 1. Clone or copy the project files to your workspace.
 2. Install dependencies:
    ```bash
-   npm install
+   npm ci
    ```
 
 ### Development Server
@@ -119,7 +122,11 @@ Build and package the production bundle:
 ```bash
 npm run build
 ```
-The build artifacts will be outputted to the `dist/` directory.
+The build artifacts are output to `dist/`. The checked-in HTML is accompanied by its generated assets; rebuild them together.
+
+Run `npm run check` for the regression suite, lint, TypeScript checks and production build. See [the September review](docs/review-2026-09-12.md) for the latest validation and [research notes](docs/research-notes.md) for sources and model boundaries.
+
+Footprints and pinouts are illustrative, not a verified component library. Review the actual device package, pin mapping, copper and drill output before manufacturing. Pour connectivity uses a bounded conservative graph and may leave narrow valid paths unverified. Thermal output is an illustrative board temperature using true simulated watts, not a junction-temperature or safety assessment.
 
 ---
 

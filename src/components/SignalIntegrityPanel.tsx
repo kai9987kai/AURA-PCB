@@ -1,22 +1,33 @@
 import React, { useState, useMemo } from 'react';
-import type { PCBLayoutData } from '../types/pcb';
+import type { PCBLayoutData, SignalModelSettings } from '../types/pcb';
+import { parseSignalModel, signalModelFor } from '../project/boardSettings';
 import { analyzeTraceSI, hasReferencePlane, simulateReflections } from '../simulation/signalIntegrity';
 import { Radio, Zap, BookOpen } from 'lucide-react';
 
 interface SignalIntegrityPanelProps {
   layoutData: PCBLayoutData;
+  onSaveModel: (model: SignalModelSettings) => void;
 }
 
 export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
-  layoutData
+  layoutData, onSaveModel
 }) => {
   const [selectedTraceId, setSelectedTraceId] = useState<string>('');
-  const [riseTime, setRiseTime] = useState('0.5'); // ns
-  const [sourceImpedance, setSourceImpedance] = useState('50'); // ohms
-  const [loadImpedance, setLoadImpedance] = useState('10000'); // high-z CMOS load
-  const [substrateHeight, setSubstrateHeight] = useState('1.6');
-  const [dielectricConstant, setDielectricConstant] = useState('4.5');
-  const [copperThickness, setCopperThickness] = useState('35');
+  const saved = signalModelFor(layoutData);
+  const [riseTime, setRiseTime] = useState(String(saved.riseTimeNs));
+  const [sourceImpedance, setSourceImpedance] = useState(String(saved.sourceImpedanceOhms));
+  const [loadImpedance, setLoadImpedance] = useState(String(saved.loadImpedanceOhms));
+  const [substrateHeight, setSubstrateHeight] = useState(String(saved.substrateHeightMm));
+  const [dielectricConstant, setDielectricConstant] = useState(String(saved.dielectricConstant));
+  const [copperThickness, setCopperThickness] = useState(String(saved.copperThicknessUm));
+  const [saveError, setSaveError] = useState('');
+  const saveModel = () => {
+    try {
+      if ([riseTime, sourceImpedance, loadImpedance, substrateHeight, dielectricConstant, copperThickness].some(value => !value.trim())) throw new Error('Complete every model input.');
+      onSaveModel(parseSignalModel({ riseTimeNs: Number(riseTime), sourceImpedanceOhms: Number(sourceImpedance), loadImpedanceOhms: Number(loadImpedance), substrateHeightMm: Number(substrateHeight), dielectricConstant: Number(dielectricConstant), copperThicknessUm: Number(copperThickness) }));
+      setSaveError('');
+    } catch (e) { setSaveError(e instanceof Error ? e.message : 'Invalid model inputs.'); }
+  };
 
   const traces = layoutData.traces;
   const activeTraceId = traces.some(t => t.id === selectedTraceId) ? selectedTraceId : traces[0]?.id ?? '';
@@ -166,6 +177,9 @@ export const SignalIntegrityPanel: React.FC<SignalIntegrityPanelProps> = ({
             {input.label}
             <input aria-label={input.label} type="text" value={input.value} onChange={event => input.set(event.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded px-2.5 py-1 text-xs text-zinc-200 font-mono" />
           </label>)}
+          <button type="button" onClick={saveModel} className="setup-apply">Save SI inputs to project</button>
+          <p>Save to use these inputs in Research Lab and after reopening the project.</p>
+          {saveError && <p role="alert" className="text-red-400">{saveError}</p>}
         </div>
       </div>
       {analysis.error && <div role="alert" className="text-xs text-red-400">{analysis.error}</div>}

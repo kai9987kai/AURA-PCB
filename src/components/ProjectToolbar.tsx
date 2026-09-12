@@ -13,6 +13,7 @@ export function ProjectToolbar({ project, onChange, undo, redo, canUndo, canRedo
   const input = useRef<HTMLInputElement>(null);
   const netlistInput = useRef<HTMLInputElement>(null);
   const [message, setMessage] = useState('');
+  const [importNotes, setImportNotes] = useState<string[]>([]);
   const [importing, setImporting] = useState(false);
   const [fabricationOpen, setFabricationOpen] = useState(false);
   // Manufacturing output describes copper, so it needs placed copper to describe.
@@ -45,6 +46,7 @@ export function ProjectToolbar({ project, onChange, undo, redo, canUndo, canRedo
     try {
       if (file.size > MAX_FILE_BYTES) throw new Error('Project files must be smaller than 2 MB.');
       const next = parseProject(await file.text());
+      setImportNotes([]);
       onChange(next, 'replace'); setMessage(`Opened ${next.name}. Undo returns to the previous design.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to read the project.'); }
     finally { setImporting(false); if (input.current) input.current.value = ''; }
@@ -55,9 +57,10 @@ export function ProjectToolbar({ project, onChange, undo, redo, canUndo, canRedo
     try {
       if (file.size > MAX_FILE_BYTES) throw new Error('Netlist files must be smaller than 2 MB.');
       const { schematic, warnings } = importSpiceNetlist(await file.text());
+      setImportNotes(warnings);
       onChange(projectFromSchematic(file.name.replace(/\.[^.]+$/, ''), schematic), 'replace');
       const parts = schematic.components.filter(component => component.type !== 'gnd').length;
-      // The first note is shown in full; the rest are in the deck the user already has.
+      // Keep every translation note available, including unsupported devices and models.
       setMessage(warnings.length
         ? `Imported ${parts} part(s) with ${warnings.length} note(s): ${warnings[0]}${warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ''}`
         : `Imported ${parts} part(s). Undo returns to the previous design.`);
@@ -69,7 +72,7 @@ export function ProjectToolbar({ project, onChange, undo, redo, canUndo, canRedo
       <div className="project-identity"><span className="project-eyebrow">DESIGN WORKSPACE</span><input aria-label="Project name" maxLength={80} value={project.name} onChange={e => onChange({ ...project, name: e.target.value }, 'name')} /></div>
       <span className="save-indicator" role="status">{saveStatus}</span>
       <div className="project-buttons">
-        <button onClick={() => { onChange(emptyProject()); setMessage('New project. Undo restores your previous design.'); }} title="New project (undoable)"><Plus size={15} />New</button>
+        <button onClick={() => { onChange(emptyProject()); setImportNotes([]); setMessage('New project. Undo restores your previous design.'); }} title="New project (undoable)"><Plus size={15} />New</button>
         <button onClick={() => input.current?.click()} disabled={importing}><FolderOpen size={15} />{importing ? 'Opening…' : 'Open'}</button>
         <button onClick={save} title="Download project (Ctrl+S)"><Download size={15} />Save</button>
         <button onClick={() => downloadText(`${filename}-bom.csv`, buildBomCsv(project), 'text/csv;charset=utf-8')} disabled={!project.schematic.components.length}><List size={15} />BOM</button>
@@ -85,5 +88,6 @@ export function ProjectToolbar({ project, onChange, undo, redo, canUndo, canRedo
     </div>
     <GerberViewerModal layout={project.pcbLayout} schematic={project.schematic} projectName={project.name} isOpen={fabricationOpen} onClose={() => setFabricationOpen(false)} />
     {(message || notice) && <div className="project-notice" role="status">{message || notice}{message && <button aria-label="Dismiss notification" onClick={() => setMessage('')}>×</button>}</div>}
+    {importNotes.length > 0 && <details className="project-import-notes"><summary>Last SPICE import: all {importNotes.length} translation notes</summary><ul>{importNotes.map((note, i) => <li key={i}>{note}</li>)}</ul><button onClick={() => setImportNotes([])}>Dismiss import notes</button></details>}
   </div>;
 }

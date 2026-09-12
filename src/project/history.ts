@@ -15,11 +15,11 @@ export function projectHistory(state: HistoryState, action: HistoryAction): Hist
   }
   if (action.type !== 'edit' || JSON.stringify(action.project) === JSON.stringify(state.present)) return state;
   const normalized = reconcileCopper(action.group === 'replace' ? action.project.schematic : state.present.schematic, action.project.schematic, action.project.pcbLayout);
-  const removed = action.project.pcbLayout.traces.length - normalized.pcbLayout.traces.length;
+  const removed = action.project.pcbLayout.traces.length - normalized.pcbLayout.traces.length + action.project.pcbLayout.vias.length - normalized.pcbLayout.vias.length + (action.project.pcbLayout.pours?.length ?? 0) - normalized.pcbLayout.pours.length;
   const coalesce = action.group && action.group !== 'replace' && action.group === state.group && action.at - state.at < 600;
   return {
     present: { ...action.project, ...normalized }, past: coalesce ? state.past : [...state.past, state.present].slice(-60), future: [],
     group: action.group, at: action.at, changed: true,
-    notice: removed > 0 ? `${removed} ambiguous route(s) removed after a net split. Undo restores the previous design.` : '',
+    notice: removed > 0 ? `${removed} ambiguous route/pour item(s) removed after a net split. Undo restores the previous design.` : '',
   };
 }

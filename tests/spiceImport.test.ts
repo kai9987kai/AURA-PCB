@@ -172,3 +172,74 @@ test('imported wires carry a route the editor can draw and a part can be dragged
     assert.equal(bend.x, end.x, 'second leg is vertical');
   }
 });
+
+test('subcircuit definitions stay scoped and cards after .end cannot enter the board', () => {
+  const { schematic, warnings } = importSpiceNetlist(`scoped deck
+V1 in 0 5
+R1 in 0 1k
+.subckt foreign in out
+Rinternal in out 10
+.subckt nested a b
+Vhidden a b 100
+.ends nested
+.ends foreign
+.control
+Rcommand in 0 1
+.endc
+.end
+Rafter in 0 1`);
+  assert.deepEqual(schematic.components.filter(component => component.type !== 'gnd').map(component => component.id), ['V1', 'R1']);
+  assert.ok(warnings.some(note => note.includes('foreign') && note.includes('definition')));
+  assert.ok(warnings.some(note => note.includes('.control')));
+});
+
+test('behavioural IC round trips never instantiate their exported helper resistors', () => {
+  const original: SchematicData = {
+    components: [part('opamp', 'U1'), part('timer555', 'IC1'), part('gnd', 'G1')], wires: [],
+  };
+  const { schematic } = importSpiceNetlist(exportSpiceNetlist(original).netlist);
+  assert.deepEqual(schematic.components.filter(component => component.type !== 'gnd').map(component => component.type), ['opamp', 'timer555']);
+});
+
+test('case variations in a SPICE node refer to the same electrical connection', () => {
+  const { schematic, warnings } = importSpiceNetlist('case test\nV1 VCC 0 5\nR1 vcc Out 1k\nR2 OUT 0 1k\n.end');
+  assert.equal(netsOf(schematic, 'V1').p, netsOf(schematic, 'R1')['1']);
+  assert.equal(netsOf(schematic, 'R1')['2'], netsOf(schematic, 'R2')['1']);
+  assert.deepEqual(warnings, []);
+  const result = runSpiceSimulation(schematic, settings);
+  assert.equal(result.errorMessage, undefined);
+  assert.ok(Math.abs(result.voltages[netsOf(schematic, 'R2')['1']].at(-1)! - 2.5) < 1e-6);
+});
+
+test('unsupported semiconductor polarities and missing models are skipped explicitly', () => {
+  const { schematic, warnings } = importSpiceNetlist(`polarities
+V1 in 0 5
+Q1 in base 0 P
+M1 in base 0 0 PM
+Q2 in base 0 MISSING
+.model P PNP(BF=200)
+.model PM PMOS(VTO=-2 KP=10u)
+.end`);
+  assert.deepEqual(schematic.components.filter(component => component.type !== 'gnd').map(component => component.id), ['V1']);
+  assert.ok(warnings.some(note => note.includes('Q1') && note.includes('PNP')));
+  assert.ok(warnings.some(note => note.includes('M1') && note.includes('PMOS')));
+  assert.ok(warnings.some(note => note.includes('Q2') && note.includes('MISSING')));
+});
+
+test('model parameters accept SPICE comma separators and optional parentheses', () => {
+  const { schematic, warnings } = importSpiceNetlist(`models
+V1 in 0 5
+M1 in gate 0 0 NM
+D1 0 in DZ
+.model NM NMOS VTO=1.7 KP=0.12
+.model DZ D(IS=1e-14, BV=3.3)
+.end`);
+  assert.deepEqual(byId(schematic, 'M1')?.params, { vth: 1.7, kn: 0.12 });
+  assert.equal(byId(schematic, 'D1')?.value, '3.3V');
+  assert.ok(warnings.some(note => note.includes('M1') && note.includes('approximation')));
+});
+
+test('unterminated scoped blocks fail instead of leaking their contents', () => {
+  assert.throws(() => importSpiceNetlist('bad\nV1 in 0 5\n.subckt bad a b\nR1 a b 1k'), /Unterminated.*subckt/);
+  assert.throws(() => importSpiceNetlist('bad\nV1 in 0 5\n.control\nR1 in 0 1k'), /Unterminated.*control/);
+});

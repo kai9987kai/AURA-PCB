@@ -102,6 +102,16 @@ export interface CopperPour {
   clearance: number; // copper-to-pour clearance for every other net, mm
 }
 
+/** Saved inputs for exploratory SI calculations; does not certify a physical stackup. */
+export interface SignalModelSettings {
+  substrateHeightMm: number;
+  dielectricConstant: number;
+  copperThicknessUm: number;
+  riseTimeNs: number;
+  sourceImpedanceOhms: number;
+  loadImpedanceOhms: number;
+}
+
 export interface PCBLayoutData {
   boardWidth: number; // in mm
   boardHeight: number; // in mm
@@ -109,6 +119,7 @@ export interface PCBLayoutData {
   traces: PCBTrace[];
   vias: PCBVia[];
   pours: CopperPour[];
+  signalModel?: SignalModelSettings;
 }
 
 export interface SimResult {
@@ -164,7 +175,16 @@ export interface FFTSpectrumData {
   magnitudesDb: number[];
   fundamentalFreqHz: number;
   peakMagnitudeDb: number;
-  thdPercent: number;
+  thdPercent: number | null;
+  sampleCount: number;
+  sampleRateHz: number;
+  frequencyResolutionHz: number;
+  nyquistHz: number;
+  startTimeS: number;
+  endTimeS: number;
+  dcOffsetV: number;
+  rmsV: number;
+  warnings: string[];
 }
 
 export interface ThermalProbe {

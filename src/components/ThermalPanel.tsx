@@ -29,6 +29,11 @@ export const ThermalPanel: React.FC<ThermalPanelProps> = ({
 
   const boardWidthPx = layoutData.boardWidth * SCALE;
   const boardHeightPx = layoutData.boardHeight * SCALE;
+  const ambient = Number(ambientTemp);
+  const convection = Number(convectionCoeff);
+  const validInputs = ambientTemp.trim() !== '' && convectionCoeff.trim() !== '' &&
+    Number.isFinite(ambient) && ambient >= -273.15 && ambient <= 1000 &&
+    Number.isFinite(convection) && convection > 0 && convection <= 10000;
 
   // Set up the sources from simulation results power dissipation
   const thermalSources = React.useMemo(() => {
@@ -42,7 +47,7 @@ export const ThermalPanel: React.FC<ThermalPanelProps> = ({
         sources.push({
           x: fp.x,
           y: fp.y,
-          power: power * 10, // scale up by 10 for dramatic visualization purposes
+          power,
           radius: Math.max(fp.width, fp.height) / 2
         });
       }
@@ -146,7 +151,7 @@ export const ThermalPanel: React.FC<ThermalPanelProps> = ({
 
   // Solver animation loop
   useEffect(() => {
-    if (!isPlaying) {
+    if (!isPlaying || !validInputs) {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       return;
     }
@@ -158,13 +163,13 @@ export const ThermalPanel: React.FC<ThermalPanelProps> = ({
           gridRef.current,
           conductivityRef.current,
           thermalSources,
-          parseFloat(ambientTemp) || 25.0,
-          parseFloat(convectionCoeff) || 15.0,
+          ambient,
+          convection,
           10 // iterations per frame for smooth speed
         );
         gridRef.current = nextGrid;
 
-        let nextMax = parseFloat(ambientTemp) || 25.0;
+        let nextMax = -Infinity;
         nextGrid.temperatures.forEach(temp => {
           if (temp > nextMax) nextMax = temp;
         });
@@ -182,7 +187,7 @@ export const ThermalPanel: React.FC<ThermalPanelProps> = ({
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [thermalSources, ambientTemp, convectionCoeff, isPlaying, drawThermalMap]);
+  }, [thermalSources, ambient, convection, validInputs, isPlaying, drawThermalMap]);
 
   // Probing temperature on hover
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -190,8 +195,8 @@ export const ThermalPanel: React.FC<ThermalPanelProps> = ({
     if (!canvas || !gridRef.current) return;
     const rect = canvas.getBoundingClientRect();
 
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+    const mouseX = (e.clientX - rect.left) * canvas.width / rect.width;
+    const mouseY = (e.clientY - rect.top) * canvas.height / rect.height;
 
     const mmX = mouseX / SCALE;
     const mmY = mouseY / SCALE;
@@ -230,6 +235,7 @@ export const ThermalPanel: React.FC<ThermalPanelProps> = ({
                 <span className="text-zinc-500 font-mono">Ambient Temp (°C)</span>
                 <input
                   type="text"
+                  aria-label="Ambient temperature (°C)"
                   value={ambientTemp}
                   onChange={(e) => setAmbientTemp(e.target.value)}
                   className="bg-zinc-950 border border-zinc-800 focus:border-cyan-500 focus:outline-none rounded px-2 py-1 text-right w-20 text-zinc-200 font-mono"
@@ -239,6 +245,7 @@ export const ThermalPanel: React.FC<ThermalPanelProps> = ({
                 <span className="text-zinc-500 font-mono">Convection (W/m²·K)</span>
                 <input
                   type="text"
+                  aria-label="Convection coefficient (W/m²·K)"
                   value={convectionCoeff}
                   onChange={(e) => setConvectionCoeff(e.target.value)}
                   className="bg-zinc-950 border border-zinc-800 focus:border-cyan-500 focus:outline-none rounded px-2 py-1 text-right w-20 text-zinc-200 font-mono"
@@ -246,6 +253,7 @@ export const ThermalPanel: React.FC<ThermalPanelProps> = ({
               </div>
             </div>
           </div>
+          {!validInputs && <p role="alert" className="text-xs text-red-400">Solver paused. Enter ambient −273.15 to 1000 °C and convection greater than 0 up to 10000 W/m²·K.</p>}
           <button
             onClick={() => setIsPlaying(!isPlaying)}
             className={`w-full mt-4 flex items-center justify-center gap-2 font-mono text-xs py-2 px-4 rounded-lg border transition-all ${
@@ -275,7 +283,7 @@ export const ThermalPanel: React.FC<ThermalPanelProps> = ({
                 return (
                   <div key={idx} className="flex justify-between items-center text-[11px] font-mono border-b border-zinc-800/40 pb-1.5">
                     <span className="text-zinc-300 font-bold">{fp?.id || 'IC'}</span>
-                    <span className="text-zinc-500">Power: <span className="text-orange-400">{(src.power / 10).toFixed(3)} W</span></span>
+                    <span className="text-zinc-500">Power: <span className="text-orange-400">{src.power.toFixed(3)} W</span></span>
                   </div>
                 );
               })
@@ -291,15 +299,15 @@ export const ThermalPanel: React.FC<ThermalPanelProps> = ({
               Thermal Status
             </h3>
             <div className="space-y-1.5 text-xs font-mono text-zinc-400">
-              <div>Peak Temperature: <span className={maxTemp > 65.0 ? 'text-red-400 font-bold' : 'text-emerald-400 font-bold'}>{maxTemp.toFixed(1)} °C</span></div>
+              <div>Modeled board peak: <span className="text-orange-400 font-bold">{maxTemp.toFixed(1)} °C</span></div>
               <div>Substrate: <span className="text-zinc-300">FR4 standard (1.6mm)</span></div>
               <div>Thermal vias: <span className="text-zinc-300">{layoutData.vias.length} vias</span></div>
             </div>
           </div>
-          {maxTemp > 65.0 && (
+          {(
             <div className="text-[10px] text-red-400 font-mono mt-3 leading-relaxed flex gap-1 items-start bg-red-950/20 p-2 border border-red-900/40 rounded">
               <Info className="w-3.5 h-3.5 shrink-0" />
-              <span>Warning: Transistor/IC temperature exceeds safe operating boundary. Add thermal vias or widening copper pads!</span>
+              <span>Illustrative board temperature, not device junction temperature or an operating limit. The coarse model treats copper cells as bulk conductors and omits package thermal resistance. Compare with real device and board data.</span>
             </div>
           )}
         </div>

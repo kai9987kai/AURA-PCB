@@ -55,6 +55,7 @@ export function reconcileCopper(previous: SchematicData, schematic: SchematicDat
   };
   next.pcbLayout.traces = layout.traces.flatMap(t => { const net = mapNet(t.net); return net ? [{ ...t, net }] : []; });
   next.pcbLayout.vias = layout.vias.flatMap(v => { const net = mapNet(v.net); return net ? [{ ...v, net }] : []; });
+  next.pcbLayout.pours = (layout.pours ?? []).flatMap(p => { const net = mapNet(p.net); return net ? [{ ...p, net }] : []; });
   return next;
 }
 

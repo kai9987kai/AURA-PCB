@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import type { PCBLayoutData, SchematicData } from '../types/pcb';
-import { buildFabricationPackage } from '../export/gerber';
+import { buildFabricationPackage, buildGerberLayers } from '../export/gerber';
 import { downloadText } from '../project/projectFile';
 import { X, Download, Layers, ZoomIn, ZoomOut, RotateCcw, Check, Eye } from 'lucide-react';
+import { parseGeneratedGerber, renderGerberCommands } from '../export/gerberPreview';
+import { createZip } from '../export/zip';
 import { getPadBoardCoords } from '../analysis/boardChecks';
 
 interface GerberViewerModalProps {
@@ -24,12 +26,15 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
   const [visibleLayers, setVisibleLayers] = useState<Record<string, boolean>>({
     topCopper: true,
     bottomCopper: true,
-    topMask: true,
+    topMask: false,
+    bottomMask: false,
+    topPaste: false,
     topSilk: true,
     outline: true,
     drills: true,
   });
 
+  const [viewport, setViewport] = useState({ width: 850, height: 550 });
   const [zoom, setZoom] = useState(1.0);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -38,6 +43,7 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
   const [downloadedAll, setDownloadedAll] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const files = useMemo(() => {
     return buildFabricationPackage(layout, projectName, schematic);
@@ -48,9 +54,10 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
   };
 
   const handleDownloadAll = () => {
-    files.forEach(f => {
-      downloadText(f.filename, f.contents, f.type);
-    });
+    const url = URL.createObjectURL(new Blob([createZip(files)], { type: 'application/zip' }));
+    const link = document.createElement('a'); link.href = url;
+    link.download = (projectName.replace(/[^a-zA-Z0-9_-]/g, '_') || 'aura-board') + '-fabrication.zip'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     setDownloadedAll(true);
     setTimeout(() => setDownloadedAll(false), 2500);
   };
@@ -58,12 +65,33 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
   // Keyboard shortcut listener for Esc
   useEffect(() => {
     if (!isOpen) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialogRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
+      if (e.key === 'Tab') {
+        const buttons = dialogRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+        if (!buttons?.length) return;
+        const first = buttons[0]; const last = buttons[buttons.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => { window.removeEventListener('keydown', onKey); previous?.focus(); };
   }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!isOpen || !canvasRef.current) return;
+    const observer = new ResizeObserver(entries => {
+      const rect = entries[0].contentRect;
+      setViewport({ width: Math.max(1, Math.round(rect.width)), height: Math.max(1, Math.round(rect.height)) });
+    });
+    observer.observe(canvasRef.current);
+    return () => observer.disconnect();
+  }, [isOpen]);
+
+  const fittedZoom = zoom * Math.max(0.01, Math.min((viewport.width - 40) / (layout.boardWidth * 8), (viewport.height - 40) / (layout.boardHeight * 8)));
 
   // Canvas drawing effect
   useEffect(() => {
@@ -82,7 +110,7 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
 
     ctx.save();
     ctx.translate(width / 2 + pan.x, height / 2 + pan.y);
-    ctx.scale(zoom, zoom);
+    ctx.scale(fittedZoom, fittedZoom);
 
     // Board center offset
     const scaleMm = 8; // 8px per mm
@@ -95,113 +123,22 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
     ctx.fillStyle = '#18181b';
     ctx.fillRect(ox, oy, bW, bH);
 
-    // 1. Board Outline
-    if (visibleLayers.outline) {
-      ctx.strokeStyle = '#f59e0b';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(ox, oy, bW, bH);
-    }
-
-    // 2. Soldermask opening (translucent greenish mask)
-    if (visibleLayers.topMask) {
-      ctx.fillStyle = 'rgba(16, 185, 129, 0.22)';
-      ctx.fillRect(ox, oy, bW, bH);
-    }
-
-    // 3. Bottom Copper
-    if (visibleLayers.bottomCopper) {
-      ctx.strokeStyle = '#38bdf8';
-      ctx.fillStyle = '#38bdf8';
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-
-      layout.traces.filter(t => t.layer === 'bottom').forEach(t => {
-        if (t.points.length < 2) return;
-        ctx.beginPath();
-        ctx.lineWidth = t.width * scaleMm;
-        ctx.moveTo(ox + t.points[0].x * scaleMm, oy + t.points[0].y * scaleMm);
-        for (let i = 1; i < t.points.length; i++) {
-          ctx.lineTo(ox + t.points[i].x * scaleMm, oy + t.points[i].y * scaleMm);
-        }
-        ctx.stroke();
-      });
-
-      // Bottom copper for through-hole pads & vias
-      layout.footprints.forEach(fp => {
-        fp.pads.forEach(p => {
-          if (p.holeDiameter > 0) {
-            const pt = getPadBoardCoords(fp, p);
-            ctx.beginPath();
-            ctx.arc(ox + pt.x * scaleMm, oy + pt.y * scaleMm, (p.diameter / 2) * scaleMm, 0, Math.PI * 2);
-            ctx.fill();
-          }
-        });
-      });
-      layout.vias.forEach(v => {
-        ctx.beginPath();
-        ctx.arc(ox + v.x * scaleMm, oy + v.y * scaleMm, (v.diameter / 2) * scaleMm, 0, Math.PI * 2);
-        ctx.fill();
-      });
-    }
-
-    // 4. Top Copper
-    if (visibleLayers.topCopper) {
-      ctx.strokeStyle = '#ef4444';
-      ctx.fillStyle = '#ef4444';
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-
-      layout.traces.filter(t => t.layer === 'top').forEach(t => {
-        if (t.points.length < 2) return;
-        ctx.beginPath();
-        ctx.lineWidth = t.width * scaleMm;
-        ctx.moveTo(ox + t.points[0].x * scaleMm, oy + t.points[0].y * scaleMm);
-        for (let i = 1; i < t.points.length; i++) {
-          ctx.lineTo(ox + t.points[i].x * scaleMm, oy + t.points[i].y * scaleMm);
-        }
-        ctx.stroke();
-      });
-
-      // Top pads
-      layout.footprints.forEach(fp => {
-        fp.pads.forEach(p => {
-          const pt = getPadBoardCoords(fp, p);
-          ctx.beginPath();
-          ctx.arc(ox + pt.x * scaleMm, oy + pt.y * scaleMm, (p.diameter / 2) * scaleMm, 0, Math.PI * 2);
-          ctx.fill();
-        });
-      });
-
-      // Top vias
-      layout.vias.forEach(v => {
-        ctx.beginPath();
-        ctx.arc(ox + v.x * scaleMm, oy + v.y * scaleMm, (v.diameter / 2) * scaleMm, 0, Math.PI * 2);
-        ctx.fill();
-      });
-    }
-
-    // 5. Silkscreen Legend
-    if (visibleLayers.topSilk) {
-      ctx.strokeStyle = '#ffffff';
-      ctx.fillStyle = '#ffffff';
-      ctx.lineWidth = 1.2;
-      ctx.font = '8px monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-
-      layout.footprints.forEach(fp => {
-        ctx.save();
-        ctx.translate(ox + fp.x * scaleMm, oy + fp.y * scaleMm);
-        ctx.rotate((fp.rotation * Math.PI) / 180);
-        ctx.strokeRect(
-          (-fp.width / 2) * scaleMm,
-          (-fp.height / 2) * scaleMm,
-          fp.width * scaleMm,
-          fp.height * scaleMm
-        );
-        ctx.fillText(fp.id, 0, (-fp.height / 2 - 1.5) * scaleMm);
-        ctx.restore();
-      });
+    // Each layer is rendered from the actual generated Gerber commands. Clear polarity
+    // removes only that layer's fill, so pour cuts cannot erase a different copper layer.
+    const colors: Record<string, string> = { bottomCopper: '#38bdf8', topCopper: '#ef4444', topMask: '#10b981', bottomMask: '#a78bfa', topPaste: '#f9a8d4', topSilk: '#ffffff', outline: '#f59e0b' };
+    const layers = buildGerberLayers(layout);
+    for (const id of Object.keys(colors)) {
+      if (!visibleLayers[id]) continue;
+      const layer = layers.find(layer => layer.id === id);
+      if (!layer) continue;
+      const buffer = document.createElement('canvas'); buffer.width = width; buffer.height = height;
+      const layerContext = buffer.getContext('2d');
+      if (!layerContext) continue;
+      layerContext.translate(width / 2 + pan.x, height / 2 + pan.y);
+      layerContext.scale(fittedZoom, fittedZoom);
+      layerContext.translate(ox, oy);
+      renderGerberCommands(layerContext, parseGeneratedGerber(layer.contents), layout.boardHeight, scaleMm, colors[id]);
+      ctx.save(); ctx.resetTransform(); ctx.drawImage(buffer, 0, 0); ctx.restore();
     }
 
     // 6. Drill Hits (Excellon NC Holes)
@@ -235,27 +172,34 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
     }
 
     ctx.restore();
-  }, [isOpen, layout, visibleLayers, zoom, pan]);
+  }, [isOpen, layout, visibleLayers, fittedZoom, pan, viewport]);
 
   if (!isOpen) return null;
 
+  const canvasPoint = (e: React.MouseEvent) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    return { x: (e.clientX - rect.left) * canvas.width / rect.width, y: (e.clientY - rect.top) * canvas.height / rect.height };
+  };
+
   const handleMouseDown = (e: React.MouseEvent) => {
     setIsPanning(true);
-    setStartPan({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+    setStartPan({ x: canvasPoint(e).x - pan.x, y: canvasPoint(e).y - pan.y });
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (isPanning) {
-      setPan({ x: e.clientX - startPan.x, y: e.clientY - startPan.y });
+      setPan({ x: canvasPoint(e).x - startPan.x, y: canvasPoint(e).y - startPan.y });
     }
     const canvas = canvasRef.current;
     if (canvas) {
       const rect = canvas.getBoundingClientRect();
-      const scaleMm = 8 * zoom;
-      const midX = rect.width / 2 + pan.x;
-      const midY = rect.height / 2 + pan.y;
-      const mmX = (e.clientX - rect.left - midX) / scaleMm + layout.boardWidth / 2;
-      const mmY = (e.clientY - rect.top - midY) / scaleMm + layout.boardHeight / 2;
+      const scaleMm = 8 * fittedZoom;
+      const midX = canvas.width / 2 + pan.x;
+      const midY = canvas.height / 2 + pan.y;
+      const mmX = ((e.clientX - rect.left) * canvas.width / rect.width - midX) / scaleMm + layout.boardWidth / 2;
+      const mmY = ((e.clientY - rect.top) * canvas.height / rect.height - midY) / scaleMm + layout.boardHeight / 2;
       // Quote fabrication-file coordinates, whose origin is the lower-left corner, so a
       // hovered feature reads the same here as it does in the Gerber and drill files.
       setMouseMm({
@@ -272,10 +216,10 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 select-none">
-      <div className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-6xl h-[88vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Fabrication package preview" style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,.82)' }} className="flex items-center justify-center p-4 select-none">
+      <div style={{ width: 'min(1200px, 96vw)', height: '88vh' }} className="bg-zinc-950 border border-zinc-800 rounded-2xl flex flex-col shadow-2xl overflow-hidden">
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-900/60">
+        <div className="fabrication-header flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-900/60">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-cyan-950 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
               <Layers className="w-4 h-4" />
@@ -300,10 +244,11 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
               }`}
             >
               {downloadedAll ? <Check className="w-3.5 h-3.5" /> : <Download className="w-3.5 h-3.5" />}
-              {downloadedAll ? 'Downloaded Package!' : 'Download All Files'}
+              {downloadedAll ? 'Downloaded Package!' : 'Download Package ZIP'}
             </button>
             <button
               onClick={onClose}
+              aria-label="Close fabrication preview"
               className="p-1.5 text-zinc-400 hover:text-zinc-100 rounded-lg hover:bg-zinc-850 transition-colors"
             >
               <X className="w-5 h-5" />
@@ -312,19 +257,21 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
         </div>
 
         {/* Modal Main Area */}
-        <div className="flex-1 flex overflow-hidden">
+        <div className="fabrication-main flex-1 flex overflow-hidden">
           {/* Left Layer Controls & Files Sidebar */}
-          <div className="w-72 border-r border-zinc-800 bg-zinc-900/40 flex flex-col overflow-y-auto custom-scrollbar p-4 gap-4">
+          <div className="fabrication-sidebar border-r border-zinc-800 bg-zinc-900/40 flex flex-col overflow-y-auto custom-scrollbar p-4 gap-4">
             <div>
               <div className="text-xs font-mono font-bold text-zinc-400 uppercase tracking-wider mb-2.5 flex items-center gap-2">
                 <Eye className="w-3.5 h-3.5 text-cyan-400" />
-                Layer Visibility
+                Exported Layer Visibility
               </div>
               <div className="space-y-1.5 font-mono text-xs">
                 {[
                   { id: 'topCopper', label: 'Top Copper (GTL)', color: '#ef4444' },
                   { id: 'bottomCopper', label: 'Bottom Copper (GBL)', color: '#38bdf8' },
-                  { id: 'topMask', label: 'Soldermask (GTS)', color: '#10b981' },
+                  { id: 'topMask', label: 'Top mask openings (GTS)', color: '#10b981' },
+                  { id: 'bottomMask', label: 'Bottom mask openings (GBS)', color: '#a78bfa' },
+                  { id: 'topPaste', label: 'Top paste (GTP)', color: '#f9a8d4' },
                   { id: 'topSilk', label: 'Silkscreen (GTO)', color: '#ffffff' },
                   { id: 'outline', label: 'Board Profile (GKO)', color: '#f59e0b' },
                   { id: 'drills', label: 'Excellon Drill (DRL)', color: '#fbbf24' },
@@ -356,6 +303,7 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
               </div>
             </div>
 
+            <p className="text-xs text-amber-400">Illustrative footprints require package/pinout review. Behavioral IC pads are not complete production land patterns. Preview covers the AURA-generated Gerber subset; verify files in an independent CAM tool before ordering.</p>
             <div className="border-t border-zinc-800 pt-3">
               <div className="text-xs font-mono font-bold text-zinc-400 uppercase tracking-wider mb-2.5 flex items-center gap-2">
                 <Download className="w-3.5 h-3.5 text-amber-400" />
@@ -385,9 +333,9 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
           </div>
 
           {/* Canvas Center Area */}
-          <div className="flex-1 flex flex-col relative bg-[#09090b] overflow-hidden">
+          <div className="fabrication-canvas flex-1 flex flex-col relative bg-[#09090b] overflow-hidden">
             {/* Canvas Zoom & Tool HUD */}
-            <div className="absolute top-3 left-3 z-10 flex items-center gap-2 bg-zinc-900/80 backdrop-blur border border-zinc-800 rounded-lg p-1 text-xs font-mono text-zinc-300 shadow-xl">
+            <div style={{ position: 'absolute', top: 10, left: 10, zIndex: 1 }} className="absolute top-3 left-3 z-10 flex items-center gap-2 bg-zinc-900/80 backdrop-blur border border-zinc-800 rounded-lg p-1 text-xs font-mono text-zinc-300 shadow-xl">
               <button
                 onClick={() => setZoom(prev => Math.min(5.0, prev * 1.25))}
                 className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-zinc-200"
@@ -414,14 +362,15 @@ export const GerberViewerModal: React.FC<GerberViewerModalProps> = ({
             </div>
 
             {/* Position HUD */}
-            <div className="absolute bottom-3 right-3 z-10 bg-zinc-900/80 backdrop-blur border border-zinc-800 rounded-lg px-3 py-1 text-xs font-mono text-zinc-400 shadow-xl">
+            <div style={{ position: 'absolute', bottom: 10, right: 10, zIndex: 1 }} className="absolute bottom-3 right-3 z-10 bg-zinc-900/80 backdrop-blur border border-zinc-800 rounded-lg px-3 py-1 text-xs font-mono text-zinc-400 shadow-xl">
               X: <span className="text-zinc-200">{mouseMm.x.toFixed(1)}</span> mm | Y: <span className="text-zinc-200">{mouseMm.y.toFixed(1)}</span> mm <span className="text-zinc-600">(file origin, lower-left)</span>
             </div>
 
             <canvas
               ref={canvasRef}
-              width={850}
-              height={550}
+              width={viewport.width}
+              height={viewport.height}
+              style={{ display: 'block', width: '100%', height: '100%' }}
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={() => setIsPanning(false)}

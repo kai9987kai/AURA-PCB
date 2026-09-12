@@ -55,121 +55,49 @@ function radix2Fft(re: Float64Array, im: Float64Array) {
 /**
  * Compute the single-sided FFT frequency spectrum from transient simulation results.
  */
-export function computeFftSpectrum(
-  timepoints: number[],
-  voltages: number[],
-  maxFftPoints: number = 1024
-): FFTSpectrumData {
-  if (timepoints.length < 4 || voltages.length < 4) {
-    return {
-      frequenciesHz: [],
-      magnitudesDb: [],
-      fundamentalFreqHz: 0,
-      peakMagnitudeDb: -100,
-      thdPercent: 0,
-    };
+export function computeFftSpectrum(timepoints: number[], voltages: number[], maxFftPoints = 1024): FFTSpectrumData {
+  if (timepoints.length !== voltages.length) throw new Error('Times and voltages must have the same length.');
+  if (timepoints.length < 4) throw new Error('At least four samples are required.');
+  if (!Number.isInteger(maxFftPoints) || maxFftPoints < 4 || maxFftPoints > 16384 || timepoints.length > 1000000) throw new Error('FFT work limit must be an integer from 4 to 16384; records are limited to one million samples.');
+  if (timepoints.some(t => !Number.isFinite(t)) || voltages.some(v => !Number.isFinite(v))) throw new Error('Samples must be finite.');
+  const warnings: string[] = [];
+  const dt = timepoints[1] - timepoints[0];
+  if (!(dt > 0)) throw new Error('Sample times must be strictly increasing.');
+  let end = timepoints.length;
+  for (let i = 1; i < timepoints.length; i++) {
+    const interval = timepoints[i] - timepoints[i - 1];
+    if (!(interval > 0)) throw new Error('Sample times must be strictly increasing.');
+    if (Math.abs(interval - dt) > dt * 1e-6) {
+      if (i === timepoints.length - 1 && interval < dt && i >= 4) {
+        end--; warnings.push('Excluded the fractional final solver step to keep uniform sampling.');
+      } else throw new Error('FFT requires uniformly spaced samples.');
+    }
   }
-
-  const tStart = timepoints[0];
-  const tEnd = timepoints[timepoints.length - 1];
-  const totalDuration = tEnd - tStart;
-  if (totalDuration <= 0) {
-    return {
-      frequenciesHz: [],
-      magnitudesDb: [],
-      fundamentalFreqHz: 0,
-      peakMagnitudeDb: -100,
-      thdPercent: 0,
-    };
-  }
-
-  // Choose power of 2 size
-  let n = 64;
-  while (n * 2 <= Math.min(timepoints.length, maxFftPoints)) {
-    n *= 2;
-  }
-  n = Math.min(n, 1024);
-
-  const dt = totalDuration / (n - 1);
-  const sampleRate = 1 / dt;
-
-  // Resample voltages at uniform time points
-  const re = new Float64Array(n);
+  const n = 2 ** Math.floor(Math.log2(Math.min(end, maxFftPoints)));
+  const start = end - n;
+  if (start) warnings.push('Using the last ' + n + ' contiguous samples at their native sample rate.');
+  const values = voltages.slice(start, end);
+  const dcOffsetV = values.reduce((sum, v) => sum + v / n, 0);
+  const rmsV = Math.sqrt(values.reduce((sum, v) => sum + (v / Math.sqrt(n)) ** 2, 0));
+  const re = Float64Array.from(values, (v, i) => (v - dcOffsetV) * 0.5 * (1 - Math.cos(2 * Math.PI * i / n)));
   const im = new Float64Array(n);
-
-  let srcIdx = 0;
-  for (let i = 0; i < n; i++) {
-    const t = tStart + i * dt;
-    while (srcIdx < timepoints.length - 2 && timepoints[srcIdx + 1] < t) {
-      srcIdx++;
-    }
-    const t0 = timepoints[srcIdx];
-    const t1 = timepoints[srcIdx + 1] || t0;
-    const v0 = voltages[srcIdx];
-    const v1 = voltages[srcIdx + 1] !== undefined ? voltages[srcIdx + 1] : v0;
-
-    const alpha = t1 > t0 ? (t - t0) / (t1 - t0) : 0;
-    const interpV = v0 + alpha * (v1 - v0);
-
-    // Apply Hann window: w(i) = 0.5 * (1 - cos(2*pi*i / (n - 1)))
-    const window = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (n - 1)));
-    re[i] = interpV * window;
-  }
-
-  // Run FFT
   radix2Fft(re, im);
-
-  // Single-sided spectrum up to Nyquist (N/2)
-  const numBins = Math.floor(n / 2);
-  const frequenciesHz: number[] = new Array(numBins);
-  const magnitudesDb: number[] = new Array(numBins);
-  const rawMagnitudes: number[] = new Array(numBins);
-
-  let fundamentalBin = 1;
-  let maxNonDcMag = -Infinity;
-
-  // Window coherent gain correction for Hann window is 2.0
-  const normFactor = (2.0 / n) * 2.0;
-
-  for (let k = 0; k < numBins; k++) {
-    frequenciesHz[k] = (k * sampleRate) / n;
-    const mag = Math.hypot(re[k], im[k]) * normFactor;
-    rawMagnitudes[k] = mag;
-    // Limit lower threshold to -120 dBV
-    const db = 20 * Math.log10(Math.max(1e-6, mag));
-    magnitudesDb[k] = Math.max(-120, Math.min(60, db));
-
-    // Exclude DC (k=0) from fundamental search
-    if (k > 0 && mag > maxNonDcMag) {
-      maxNonDcMag = mag;
-      fundamentalBin = k;
-    }
+  const sampleRateHz = 1 / dt;
+  const resolution = sampleRateHz / n;
+  const amplitudes = Array.from({ length: n / 2 + 1 }, (_, k) => k === 0 ? Math.abs(dcOffsetV) : Math.hypot(re[k], im[k]) * (k === n / 2 ? 2 : 2 * Math.SQRT2) / n);
+  if (!Number.isFinite(rmsV) || amplitudes.some(v => !Number.isFinite(v))) throw new Error('Sample magnitudes exceed the finite FFT range.');
+  let peak = 0;
+  for (let k = 1; k < amplitudes.length; k++) if (amplitudes[k] > Math.max(1e-12, rmsV * 1e-12) && (!peak || amplitudes[k] > amplitudes[peak])) peak = k;
+  const magnitudesDb = amplitudes.map(v => 20 * Math.log10(Math.max(1e-6, v)));
+  let thdPercent: number | null = null;
+  if (peak >= 4 && peak * 5 < n / 2 - 1) {
+    const left = amplitudes[peak - 1]; const right = amplitudes[peak + 1];
+    if (Math.abs(left - right) / amplitudes[peak] < 0.01) thdPercent = Math.sqrt([2,3,4,5].reduce((sum, h) => sum + amplitudes[peak * h] ** 2, 0)) / amplitudes[peak] * 100;
   }
-
-  const fundamentalFreqHz = frequenciesHz[fundamentalBin] || 0;
-  const peakMagnitudeDb = magnitudesDb[fundamentalBin] || -100;
-
-  // Estimate Total Harmonic Distortion (THD) from 2nd through 5th harmonics
-  let harmonicEnergy = 0;
-  const f0Mag = rawMagnitudes[fundamentalBin] || 1e-9;
-
-  for (let h = 2; h <= 5; h++) {
-    const targetBin = fundamentalBin * h;
-    if (targetBin < numBins) {
-      const harmMag = rawMagnitudes[targetBin];
-      harmonicEnergy += harmMag * harmMag;
-    }
-  }
-
-  const thdPercent = f0Mag > 1e-6
-    ? Math.min(100, (Math.sqrt(harmonicEnergy) / f0Mag) * 100)
-    : 0;
-
-  return {
-    frequenciesHz,
-    magnitudesDb,
-    fundamentalFreqHz,
-    peakMagnitudeDb,
-    thdPercent: Math.round(thdPercent * 10) / 10,
-  };
+  if (thdPercent === null) warnings.push('Harmonic ratio unavailable: needs a resolved, bin-centred dominant tone and harmonics 2–5 below Nyquist.');
+  warnings.push('Dominant AC is the strongest bin, not necessarily the fundamental. Off-bin amplitudes have Hann scalloping error; aliasing above Nyquist cannot be diagnosed from these samples.');
+  return { frequenciesHz: amplitudes.map((_, k) => k * resolution), magnitudesDb,
+    fundamentalFreqHz: peak * resolution, peakMagnitudeDb: peak ? magnitudesDb[peak] : -120, thdPercent,
+    sampleCount: n, sampleRateHz, frequencyResolutionHz: resolution, nyquistHz: sampleRateHz / 2,
+    startTimeS: timepoints[start], endTimeS: timepoints[end - 1], dcOffsetV, rmsV, warnings };
 }

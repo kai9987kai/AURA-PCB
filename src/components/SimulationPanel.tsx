@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import type { SimResult, SimSettings, SchematicData } from '../types/pcb';
 import { runSpiceSimulation } from '../simulation/spiceSolver';
+import { SpectrumPanel } from './SpectrumPanel';
 import { Play, Activity, Award, Info, Settings } from 'lucide-react';
 
 interface SimulationPanelProps {
@@ -16,7 +17,7 @@ export const SimulationPanel: React.FC<SimulationPanelProps> = ({
 }) => {
   const [stopTime, setStopTime] = useState('0.02'); // 20ms default
   const [stepTime, setStepTime] = useState('5e-5'); // 50us default
-  const [selectedNodes, setSelectedNodes] = useState<string[]>([]);
+  const [selectedNodes, setSelectedNodes] = useState<string[]>(() => simResult?.nodes.filter(n => n !== 'GND').slice(0, 2) ?? []);
   const [hoveredData, setHoveredData] = useState<{ time: number; values: Record<string, number> } | null>(null);
 
   const getDefaultSelectedNodes = (result: SimResult) => {
@@ -27,8 +28,8 @@ export const SimulationPanel: React.FC<SimulationPanelProps> = ({
   const handleRunSimulation = () => {
     const settings: SimSettings = {
       type: 'transient',
-      stopTime: parseFloat(stopTime) || 0.02,
-      stepTime: parseFloat(stepTime) || 5e-5
+      stopTime: Number(stopTime),
+      stepTime: Number(stepTime)
     };
 
     try {
@@ -39,7 +40,6 @@ export const SimulationPanel: React.FC<SimulationPanelProps> = ({
       });
       onSetSimResult(res);
     } catch (e: unknown) {
-      console.error(e);
       const message = e instanceof Error ? e.message : 'Simulation encountered a mathematical singularity';
       setSelectedNodes([]);
       onSetSimResult({
@@ -119,7 +119,8 @@ export const SimulationPanel: React.FC<SimulationPanelProps> = ({
   const handleScopeMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (!simResult || !plotData || simResult.timepoints.length === 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
+    const transform = e.currentTarget.getScreenCTM();
+    const mouseX = transform ? new DOMPoint(e.clientX, e.clientY).matrixTransform(transform.inverse()).x : (e.clientX - rect.left) * scopeWidth / rect.width;
 
     // Convert mouseX to time coordinate
     const plotWidth = scopeWidth - 2 * padding;
@@ -181,6 +182,7 @@ export const SimulationPanel: React.FC<SimulationPanelProps> = ({
                 <span className="text-zinc-500 font-mono">Stop Time (s)</span>
                 <input
                   type="text"
+                  aria-label="Stop Time (s)"
                   value={stopTime}
                   onChange={(e) => setStopTime(e.target.value)}
                   className="bg-zinc-950 border border-zinc-800 focus:border-cyan-500 focus:outline-none rounded px-2 py-1 text-right w-24 text-zinc-200 font-mono"
@@ -190,6 +192,7 @@ export const SimulationPanel: React.FC<SimulationPanelProps> = ({
                 <span className="text-zinc-500 font-mono">Step Time (s)</span>
                 <input
                   type="text"
+                  aria-label="Step Time (s)"
                   value={stepTime}
                   onChange={(e) => setStepTime(e.target.value)}
                   className="bg-zinc-950 border border-zinc-800 focus:border-cyan-500 focus:outline-none rounded px-2 py-1 text-right w-24 text-zinc-200 font-mono"
@@ -399,6 +402,7 @@ export const SimulationPanel: React.FC<SimulationPanelProps> = ({
           </div>
         </div>
       )}
+      {simResult && !simResult.errorMessage && simResult.timepoints.length > 0 && <SpectrumPanel result={simResult} />}
     </div>
   );
 };

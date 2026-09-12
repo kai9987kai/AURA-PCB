@@ -13,10 +13,11 @@ import { electricalSignature, nextComponentId } from './project/connectivity';
 import { PARTS, partBody, partPads, partPins } from './project/parts';
 import { analyzeBoard } from './analysis/boardChecks';
 import { ResearchPanel } from './components/ResearchPanel';
-import { Activity, Edit3, Compass, Cpu, Thermometer, Zap } from 'lucide-react';
+import { BoardSetupPanel } from './components/BoardSetupPanel';
+import { Activity, Edit3, Compass, Cpu, Thermometer, Zap, Settings2 } from 'lucide-react';
 
 function App() {
-  const [activeView, setActiveView] = useState<'schematic' | 'layout2d' | 'layout3d' | 'simulation' | 'thermal' | 'si' | 'research'>('schematic');
+  const [activeView, setActiveView] = useState<'schematic' | 'layout2d' | 'layout3d' | 'simulation' | 'thermal' | 'si' | 'research' | 'board'>('schematic');
   
   const { project, commit, undo, redo, canUndo, canRedo, saveStatus, notice } = useProject();
   const { schematic, pcbLayout } = project;
@@ -390,11 +391,13 @@ function App() {
               <Activity className="w-3.5 h-3.5 text-emerald-400" />
               Research Lab
             </button>
+            <button onClick={() => setActiveView('board')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-mono ${activeView === 'board' ? 'bg-zinc-800 text-cyan-400' : 'text-zinc-400'}`}><Settings2 size={15} />Board Setup</button>
           </nav>
         </div>
 
         {/* Dynamic Display Panel */}
         <div className="flex-1 min-h-0 relative">
+          {activeView === 'board' && <BoardSetupPanel key={JSON.stringify([pcbLayout.boardWidth, pcbLayout.boardHeight, pcbLayout.signalModel])} layout={pcbLayout} onApply={layout => commit({ ...project, pcbLayout: layout })} />}
           {activeView === 'schematic' && (
             <SchematicEditor
               data={schematicWithNets}
@@ -442,7 +445,9 @@ function App() {
 
           {activeView === 'si' && (
             <SignalIntegrityPanel
+              key={JSON.stringify(pcbLayout.signalModel)}
               layoutData={pcbLayoutWithNets}
+              onSaveModel={signalModel => commit({ ...project, pcbLayout: { ...pcbLayout, signalModel } })}
             />
           )}
 

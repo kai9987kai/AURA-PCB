@@ -1,6 +1,10 @@
 import type { Pad, PCBFootprint, PCBLayoutData } from '../types/pcb';
 
-export interface Point { x: number; y: number }
+import { segmentDistance } from './geometry';
+import type { Point } from './geometry';
+import { verifyPourConnections } from './pourConnectivity';
+export { pointSegmentDistance, segmentDistance } from './geometry';
+export type { Point } from './geometry';
 export interface BoardIssue {
   id: string;
   message: string;
@@ -23,6 +27,8 @@ export interface BoardAnalysis {
   airwires: Airwire[];
   /** Percentage of required pad-to-pad connections supplied by actual copper. */
   routingCompletion: number;
+  /** Conservative pour checks may leave narrow paths unverified. */
+  notices: string[];
 }
 
 // Conservative project defaults, not a fabrication-house capability guarantee.
@@ -42,30 +48,7 @@ export function getPadBoardCoords(fp: Pick<PCBFootprint, 'x' | 'y' | 'rotation'>
   };
 }
 
-export function pointSegmentDistance(p: Point, a: Point, b: Point): number {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const squaredLength = dx * dx + dy * dy;
-  const t = squaredLength === 0 ? 0 : Math.max(0, Math.min(1,
-    ((p.x - a.x) * dx + (p.y - a.y) * dy) / squaredLength));
-  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
-}
-
-/** Exact segment intersection plus symmetric endpoint distances, including degeneracy. */
-export function segmentDistance(a: Point, b: Point, c: Point, d: Point): number {
-  const cross = (p: Point, q: Point, r: Point) =>
-    (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
-  const abC = cross(a, b, c);
-  const abD = cross(a, b, d);
-  const cdA = cross(c, d, a);
-  const cdB = cross(c, d, b);
-  if (((abC > 0 && abD < 0) || (abC < 0 && abD > 0)) &&
-      ((cdA > 0 && cdB < 0) || (cdA < 0 && cdB > 0))) return 0;
-  return Math.min(pointSegmentDistance(a, c, d), pointSegmentDistance(b, c, d),
-    pointSegmentDistance(c, a, b), pointSegmentDistance(d, a, b));
-}
-
-interface Copper {
+export interface Copper {
   id: string;
   label: string;
   net?: string;
@@ -118,11 +101,12 @@ class DisjointSet {
 
 /**
  * Two-layer circular-pad model: SMD pads are top-only; drilled pads and vias
- * are plated through. A copper pour does supply connectivity, to same-net copper on its
- * own layer that falls inside it. Invalid objects are reported and excluded from connectivity.
+ * are plated through. A copper pour supplies connectivity only through paths verified clear of
+ * foreign-copper clearances and drill holes on its own layer. Invalid objects are reported and excluded from connectivity.
  */
 export function analyzeBoard(layout: PCBLayoutData): BoardAnalysis {
   const issues: BoardIssue[] = [];
+  const notices: string[] = [];
   const copper: Copper[] = [];
   const add = (kind: BoardIssue['kind'], id: string, message: string, point?: Point, itemIds?: string[]) => {
     issues.push({ id: `${kind}:${id}`, kind, message, ...(point ? { x: point.x, y: point.y } : {}), itemIds });
@@ -221,21 +205,22 @@ export function analyzeBoard(layout: PCBLayoutData): BoardAnalysis {
     }
   }
 
-  // A flood is not clipped around foreign copper, it is cleared away from it, so the only
-  // electrical question it raises is which same-net copper it swallows. That copper forms one
-  // group whether or not a trace was ever drawn between the pieces.
-  // Documents written before pours existed carry no list at all.
+  // A fill can split into islands after clearance cuts. Only demonstrable paths count.
   (layout.pours ?? []).forEach((pour, index) => {
     const pourId = `pour:${index}`;
     const pourNet = knownNet(pour.net);
     const label = `Pour ${pour.id} (${pourNet ?? 'unassigned'})`;
     if (!validBoard || !Number.isFinite(pour.margin) || pour.margin < 0 ||
-        !Number.isFinite(pour.clearance) || pour.clearance <= 0 || !pourNet) {
+        !Number.isFinite(pour.clearance) || pour.clearance <= 0 || !pourNet ||
+        !['top', 'bottom'].includes(pour.layer)) {
       add('invalid', pourId, `Invalid pour geometry: ${label}`);
       return;
     }
     if (pour.margin < BOARD_RULES.edgeClearance - EPSILON) {
       add('edge', pourId, `Board edge violation: ${label} margin ${pour.margin.toFixed(2)}mm is below ${BOARD_RULES.edgeClearance.toFixed(2)}mm`, undefined, [pour.id]);
+    }
+    if (pour.clearance < BOARD_RULES.clearance - EPSILON) {
+      add('clearance', pourId, `Clearance violation: ${label} clearance ${pour.clearance.toFixed(2)}mm is below ${BOARD_RULES.clearance.toFixed(2)}mm`, undefined, [pour.id]);
     }
     const region = {
       x0: pour.margin, y0: pour.margin,
@@ -245,15 +230,12 @@ export function analyzeBoard(layout: PCBLayoutData): BoardAnalysis {
       add('invalid', pourId, `Invalid pour geometry: ${label} margin leaves no copper`);
       return;
     }
-    const side = pour.layer === 'top' ? 1 : 2;
-    const swallowed = copper.flatMap((item, i) => item.net === pourNet && (item.layers & side) !== 0 &&
-      item.points.some(p => p.x >= region.x0 && p.x <= region.x1 && p.y >= region.y0 && p.y <= region.y1)
-      ? [i] : []);
-    if (!swallowed.length) {
-      add('unrouted', pourId, `Floating pour ${pour.id}: no ${pourNet} copper lies inside the ${pour.layer} flood, so it is isolated copper`);
-      return;
+    const result = verifyPourConnections(copper, { ...pour, net: pourNet }, region);
+    for (const group of result.groups) for (const i of group.slice(1)) connected.join(group[0], i);
+    if (!result.groups.length) {
+      add('unrouted', pourId, `Floating pour ${pour.id}: no verified ${pourNet} copper contact on the ${pour.layer} flood`);
     }
-    for (const i of swallowed.slice(1)) connected.join(swallowed[0], i);
+    notices.push(`${label}: connectivity paths checked on a ${result.spacing.toFixed(2)}mm grid. Narrow paths may remain unverified; inspect the exported fill.${result.limited ? ' Check budget reached; unverified connections remain unrouted.' : ''}`);
   });
 
   // Retain invalid terminals in the denominator so bad geometry cannot make
@@ -304,5 +286,5 @@ export function analyzeBoard(layout: PCBLayoutData): BoardAnalysis {
       }
     }
   }
-  return { issues, nets, airwires, routingCompletion: neededConnections ? madeConnections / neededConnections * 100 : nets.some(net => !net.fullyRouted) ? 0 : 100 };
+  return { issues, nets, airwires, notices, routingCompletion: neededConnections ? madeConnections / neededConnections * 100 : nets.some(net => !net.fullyRouted) ? 0 : 100 };
 }

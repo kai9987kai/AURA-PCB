@@ -342,6 +342,43 @@ function logicalLines(text: string): { text: string; line: number }[] {
   return lines;
 }
 
+/** Definition bodies and simulator commands are not top-level devices. */
+function topLevelLines(lines: ReturnType<typeof logicalLines>, warnings: string[]) {
+  const top: typeof lines = [];
+  let subcircuitDepth = 0;
+  let controlLine = 0;
+  for (const card of lines) {
+    const command = card.text.split(/\s+/)[0].toLowerCase();
+    if (controlLine) {
+      if (command === '.endc') controlLine = 0;
+      continue;
+    }
+    if (command === '.control') {
+      controlLine = card.line;
+      warnings.push(`Line ${card.line}: .control commands are not executed and the entire block was skipped.`);
+      continue;
+    }
+    if (command === '.subckt') {
+      subcircuitDepth++;
+      const name = card.text.split(/\s+/)[1] ?? '(unnamed)';
+      if (!Object.hasOwn(SUBCIRCUITS, name.toUpperCase())) {
+        warnings.push(`Line ${card.line}: subcircuit definition "${name}" is not evaluated; its body was skipped.`);
+      }
+      continue;
+    }
+    if (command === '.ends') {
+      if (!subcircuitDepth) throw new Error(`Line ${card.line}: .ends has no matching .subckt.`);
+      subcircuitDepth--;
+      continue;
+    }
+    if (command === '.end') break;
+    if (!subcircuitDepth) top.push(card);
+  }
+  if (subcircuitDepth) throw new Error('Unterminated .subckt definition. No partial circuit was imported.');
+  if (controlLine) throw new Error(`Unterminated .control block at line ${controlLine}.`);
+  return top;
+}
+
 /**
  * Read a SPICE deck back into a schematic this project can edit and simulate.
  *
@@ -355,16 +392,16 @@ export function importSpiceNetlist(text: string): SpiceImport {
     throw new Error(`Netlists are limited to ${MAX_NETLIST_BYTES / 1000} KB.`);
   }
   const warnings: string[] = [];
-  const lines = logicalLines(text);
+  const lines = topLevelLines(logicalLines(text), warnings);
   if (!lines.length) throw new Error('That file contains no SPICE cards.');
 
   // Models are read first because a device card can reference one declared after it.
   const models = new Map<string, { kind: string; params: Map<string, number> }>();
   for (const { text: line } of lines) {
-    const model = /^\.model\s+(\S+)\s+([A-Za-z]+)\s*(?:\(([^)]*)\))?/i.exec(line);
+    const model = /^\.model\s+(\S+)\s+([A-Za-z]+)\s*(.*)$/i.exec(line);
     if (!model) continue;
     const params = new Map<string, number>();
-    for (const [, key, value] of (model[3] ?? '').matchAll(/([A-Za-z]+)\s*=\s*(\S+)/g)) {
+    for (const [, key, value] of model[3].matchAll(/([A-Za-z]+)\s*=\s*([^\s,()]+)/g)) {
       const parsed = parseValue(value);
       if (Number.isFinite(parsed)) params.set(key.toUpperCase(), parsed);
     }
@@ -377,14 +414,14 @@ export function importSpiceNetlist(text: string): SpiceImport {
   const claim = (raw: string, fallback: string) => {
     const base = identifier(raw, fallback);
     let id = base;
-    for (let n = 2; usedIds.has(id); n++) id = `${base}_${n}`;
-    usedIds.add(id);
+    for (let n = 2; usedIds.has(id.toUpperCase()); n++) id = `${base}_${n}`;
+    usedIds.add(id.toUpperCase());
     return id;
   };
 
   lines.forEach(({ text: line, line: lineNumber }, index) => {
     if (line.startsWith('.')) {
-      if (/^\.(model|tran|end|ends|title|options|option|op|probe|print|plot|width|temp)\b/i.test(line)) return;
+      if (/^\.(model|tran|title|options|option|op|probe|print|plot|width|temp)\b/i.test(line)) return;
       warnings.push(`Line ${lineNumber}: "${line.split(/\s+/)[0]}" is not supported and was ignored.`);
       return;
     }
@@ -401,7 +438,7 @@ export function importSpiceNetlist(text: string): SpiceImport {
     if (index === 0) {
       const tail = shape ? rest.slice(shape.nodes) : [];
       const strict = letter === 'X'
-        ? rest.length >= 2 && Boolean(SUBCIRCUITS[rest.at(-1)?.toUpperCase() ?? ''])
+        ? rest.length >= 2 && Object.hasOwn(SUBCIRCUITS, rest.at(-1)?.toUpperCase() ?? '')
         : Boolean(shape) && rest.length > (shape?.nodes ?? 0) && (
           'RCL'.includes(letter) ? Number.isFinite(parseValue(tail[0] ?? ''))
             : letter === 'V' ? /^(DC\b|AC\b|SIN\b|PULSE\b|[+-]?[\d.])/i.test(tail.join(' '))
@@ -410,16 +447,18 @@ export function importSpiceNetlist(text: string): SpiceImport {
     }
 
     if (letter === 'X') {
-      const subcircuit = SUBCIRCUITS[rest.at(-1)?.toUpperCase() ?? ''];
+      const subcircuitName = rest.at(-1)?.toUpperCase() ?? '';
+      const subcircuit = Object.hasOwn(SUBCIRCUITS, subcircuitName) ? SUBCIRCUITS[subcircuitName] : undefined;
       if (!subcircuit) {
         warnings.push(`Line ${lineNumber}: subcircuit "${rest.at(-1) ?? name}" has no model here and was skipped.`);
         return;
       }
-      const nodes = rest.slice(0, -1);
+      const nodes = rest.slice(0, -1).map(node => node.toUpperCase());
       if (nodes.length !== subcircuit.pins.length) {
         warnings.push(`Line ${lineNumber}: ${name} has ${nodes.length} nodes, expected ${subcircuit.pins.length}; skipped.`);
         return;
       }
+      warnings.push(`${name}: imported as AURA's built-in ${subcircuit.type} behaviour; the subcircuit implementation is not evaluated.`);
       devices.push({ id: claim(name, `X${devices.length + 1}`), type: subcircuit.type, value: PARTS[subcircuit.type].value, params: {}, nodes, pins: subcircuit.pins });
       return;
     }
@@ -432,11 +471,24 @@ export function importSpiceNetlist(text: string): SpiceImport {
       warnings.push(`Line ${lineNumber}: ${name} needs ${shape.nodes} nodes; skipped.`);
       return;
     }
-    const nodes = rest.slice(0, shape.nodes);
+    const nodes = rest.slice(0, shape.nodes).map(node => node.toUpperCase());
     const tail = rest.slice(shape.nodes);
     let type = shape.type;
     let value = PARTS[type].value;
     const params: Record<string, number> = { ...PARTS[type].params };
+
+    if ('DQM'.includes(letter)) {
+      const modelName = tail[0]?.toUpperCase() ?? '';
+      const model = models.get(modelName);
+      const expected = letter === 'D' ? 'D' : letter === 'Q' ? 'NPN' : 'NMOS';
+      if (!model || model.kind !== expected) {
+        warnings.push(`Line ${lineNumber}: ${name} model "${tail[0] ?? '(missing)'}" ${model ? `is ${model.kind}, which this device importer does not model` : 'is not defined'}; skipped.`);
+        return;
+      }
+      if (!modelName.startsWith('AURA_')) {
+        warnings.push(`${name}: imported with AURA's simplified ${expected} approximation; vendor model behaviour and unsupported parameters are not preserved.`);
+      }
+    }
 
     if (letter === 'R' || letter === 'C' || letter === 'L') {
       const parsed = parseValue(tail[0] ?? '');

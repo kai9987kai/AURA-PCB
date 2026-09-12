@@ -1,6 +1,7 @@
 import type { ComponentType, PCBLayoutData, SchematicData } from '../types/pcb';
 import { reconcileCopper } from './connectivity';
 import { partBody, partPads } from './parts';
+import { parseSignalModel } from './boardSettings';
 
 export interface Project { name: string; schematic: SchematicData; pcbLayout: PCBLayoutData }
 export const MAX_FILE_BYTES = 2_000_000;
@@ -83,7 +84,8 @@ export function parseProject(contents: string): Project {
   // Two floods on one layer would overlap across the whole board and short their nets.
   if (new Set(pours.map(pour => pour.layer)).size !== pours.length) fail('one pour per layer');
   const schematic = { components, wires };
-  const layout = { boardWidth: number(pcb.boardWidth, 'board width', 10, 500), boardHeight: number(pcb.boardHeight, 'board height', 10, 500), footprints, traces, vias, pours };
+  const layout = { boardWidth: number(pcb.boardWidth, 'board width', 10, 500), boardHeight: number(pcb.boardHeight, 'board height', 10, 500), footprints, traces, vias, pours,
+    ...(pcb.signalModel === undefined ? {} : { signalModel: parseSignalModel(pcb.signalModel) }) };
   return { name: text(data.name, 'project name', 80), ...reconcileCopper(schematic, schematic, layout) };
 }
 

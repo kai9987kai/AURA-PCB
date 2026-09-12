@@ -27,7 +27,7 @@ test('engineering values accept scientific notation and reject trailing junk', (
 
 test('DC divider obeys Ohm law, power balance, and source loss semantics', () => {
   const result = runSpiceSimulation(circuit(), settings);
-  assert.ok(result.voltages.NET_2.every(value => Math.abs(value - 2.5) < 1e-10));
+  assert.ok(result.voltages['N_R1:2'].every(value => Math.abs(value - 2.5) < 1e-10));
   assert.ok(result.currents.R1.every(value => Math.abs(value - 0.0025) < 1e-12));
   assert.ok(Math.abs(result.powerDissipation.R1 - 0.00625) < 1e-12);
   assert.equal(result.powerDissipation.V1, 0);
@@ -38,7 +38,7 @@ test('RC charging agrees with analytic exponential and monotonic energy storage'
   const result = runSpiceSimulation(circuit('capacitor', '1u'), settings);
   let previous = 0;
   result.timepoints.forEach((time, index) => {
-    const voltage = result.voltages.NET_2[index];
+    const voltage = result.voltages['N_R1:2'][index];
     assert.ok(voltage >= previous && voltage < 5);
     assert.ok(Math.abs(voltage - 5 * (1 - Math.exp(-time / 0.001))) < 0.01);
     assert.ok(Math.abs(result.currents.R1[index] - result.currents.X1[index]) < 1e-10);
@@ -57,17 +57,17 @@ test('RL current approaches V/R with the expected time constant', () => {
 test('diode and LED currents converge and satisfy series KCL', () => {
   for (const type of ['diode', 'led'] as const) {
     const result = runSpiceSimulation(circuit(type, ''), { ...settings, stopTime: 0.0001 });
-    assert.ok(result.voltages.NET_2[0] > 0.5 && result.voltages.NET_2[0] < 2.5);
+    assert.ok(result.voltages['N_R1:2'][0] > 0.5 && result.voltages['N_R1:2'][0] < 2.5);
     result.currents.R1.forEach((current, i) => assert.ok(Math.abs(current - result.currents.X1[i]) < 1e-8));
   }
 });
 
 test('pulse values use requested levels and frequency, and sine allows zero amplitude', () => {
   const pulse = runSpiceSimulation(circuit('resistor', '1k', 'pulse(1,3,1k)'), { ...settings, stopTime: 0.002, stepTime: 0.00025 });
-  assert.equal(pulse.voltages.NET_1[0], 3);
-  assert.equal(pulse.voltages.NET_1[1], 1);
+  assert.equal(pulse.voltages['N_R1:1'][0], 3);
+  assert.equal(pulse.voltages['N_R1:1'][1], 1);
   const constant = runSpiceSimulation(circuit('resistor', '1k', 'sin(2,0,1k)'), settings);
-  assert.ok(constant.voltages.NET_1.every(value => value === 2));
+  assert.ok(constant.voltages['N_R1:1'].every(value => value === 2));
 });
 
 test('invalid times and excessive work fail before simulation', () => {

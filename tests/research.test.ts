@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DEFAULT_SIGNAL_MODEL } from '../src/project/boardSettings.ts';
 import { buildResearchReport } from '../src/analysis/pcbResearch.ts';
 import type { PCBLayoutData, SchematicData, SimResult } from '../src/types/pcb.ts';
 
@@ -53,4 +54,15 @@ test('missing footprint and pad net mismatch are visible without cached DRC inpu
   assert.ok(report.issues.some(issue => issue.includes('Schematic/PCB mismatch at R1:1')));
   assert.equal(report.status, 'blocked');
   assert.ok(report.sources.every(source => source.url.startsWith('https://')));
+});
+
+
+test('saved plane geometry changes report impedance and records its assumptions', () => {
+  const { schematic, layout } = fixture('SIGNAL');
+  layout.traces.push({ id: 'route', net: 'SIGNAL', layer: 'top', width: 0.3, points: [{ x: 10, y: 10 }, { x: 30, y: 10 }] });
+  const baseline = buildResearchReport(schematic, layout, null, []);
+  layout.signalModel = { ...DEFAULT_SIGNAL_MODEL, substrateHeightMm: 0.2, riseTimeNs: 1.2 };
+  const changed = buildResearchReport(schematic, layout, null, []);
+  assert.ok(changed.nets[0].impedanceOhms! < baseline.nets[0].impedanceOhms!);
+  assert.ok(changed.recommendations.some(r => r.detail.includes('0.2 mm plane distance') && r.detail.includes('1.2 ns')));
 });

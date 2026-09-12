@@ -198,7 +198,7 @@ export function runSpiceSimulation(
     });
   }
 
-  let autoNetIdx = 1;
+
   Object.keys(netGroups).forEach(root => {
     if (root === groundRoot) return;
 
@@ -211,7 +211,7 @@ export function runSpiceSimulation(
     if (isGnd) {
       netName = 'GND';
     } else {
-      netName = `NET_${autoNetIdx++}`;
+      netName = `N_${pinsInGroup.slice().sort()[0]}`;
     }
 
     if (netName === 'GND') {

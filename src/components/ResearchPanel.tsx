@@ -241,7 +241,7 @@ export const ResearchPanel: React.FC<ResearchPanelProps> = ({
             <p className="text-xs text-zinc-400">{source.implication}</p>
           </div>)}
         </div>
-        <p className="text-[10px] text-zinc-500">Sources checked 10 September 2026. The recent benchmark papers motivate verification; they do not validate AURA-PCB's models.</p>
+        <p className="text-[10px] text-zinc-500">Sources checked 10–12 September 2026. The recent benchmark papers motivate verification; they do not validate AURA-PCB's models.</p>
       </section>
     </div>
   );

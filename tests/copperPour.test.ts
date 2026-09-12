@@ -53,6 +53,54 @@ test('a pour joins only its own net', () => {
   assert.equal(nets.find(net => net.net === 'SIG')?.connectedGroups, 2, 'a foreign net is cleared, not connected');
 });
 
+test('foreign copper that cuts through a pour leaves ground islands disconnected', () => {
+  const split = twoGrounds({ pours: [pour()], traces: [{
+    id: 'barrier', net: 'SIG', layer: 'top', width: 0.4,
+    points: [{ x: 20, y: 0.5 }, { x: 20, y: 19.5 }],
+  }] });
+  assert.equal(gndNet(split).connectedGroups, 2);
+  assert.equal(analyzeBoard(split).routingCompletion, 0);
+  // Moving the barrier away from both boundaries restores a path around it.
+  split.traces[0].points = [{ x: 20, y: 3 }, { x: 20, y: 17 }];
+  assert.equal(gndNet(split).fullyRouted, true);
+});
+
+test('overlapping clearance cuts form a barrier even if no single trace spans the pour', () => {
+  const split = twoGrounds({ pours: [pour()], traces: [
+    { id: 'upper', net: 'SIG', layer: 'top', width: 0.4, points: [{ x: 20, y: 0.5 }, { x: 20, y: 9.8 }] },
+    { id: 'lower', net: 'SIG', layer: 'top', width: 0.4, points: [{ x: 20, y: 10.2 }, { x: 20, y: 19.5 }] },
+  ] });
+  assert.equal(gndNet(split).fullyRouted, false);
+});
+
+test('a closed foreign trace can isolate a ground pad inside a pour', () => {
+  const ring = twoGrounds({ pours: [pour()], traces: [{
+    id: 'ring', net: 'SIG', layer: 'top', width: 0.4,
+    points: [{ x: 7, y: 7 }, { x: 13, y: 7 }, { x: 13, y: 13 }, { x: 7, y: 13 }, { x: 7, y: 7 }],
+  }] });
+  assert.equal(gndNet(ring).fullyRouted, false);
+});
+
+test('a pad overlapping the flood boundary can connect without its centre inside the pour', () => {
+  const edgeContact = board({
+    footprints: [pad('G1', 5.6, 10, 'GND'), pad('G2', 30, 10, 'GND')], pours: [pour({ margin: 6 })],
+  });
+  assert.equal(gndNet(edgeContact).fullyRouted, true);
+});
+
+test('a trace crossing the flood with both endpoints outside can contact it', () => {
+  const crossing = board({
+    footprints: [pad('G1', 3, 10, 'GND'), pad('G2', 30, 12, 'GND')], pours: [pour({ margin: 6 })],
+    traces: [{ id: 'crossing', net: 'GND', layer: 'top', width: 0.4, points: [{ x: 3, y: 10 }, { x: 37, y: 10 }] }],
+  });
+  assert.equal(gndNet(crossing).fullyRouted, true);
+});
+
+test('a pour clearance smaller than the board minimum produces a finding', () => {
+  const analysis = analyzeBoard(twoGrounds({ pours: [pour({ clearance: 0.05 })] }));
+  assert.ok(analysis.issues.some(issue => issue.kind === 'clearance' && issue.message.includes('Pour')));
+});
+
 test('a pour reaches only copper that shares its layer', () => {
   // Surface-mount pads exist on the top layer alone, so a bottom flood cannot touch them.
   const surfaceMount = board({

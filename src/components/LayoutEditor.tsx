@@ -72,11 +72,11 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
   const getMMCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current) return { x: 0, y: 0 };
     const rect = canvasRef.current.getBoundingClientRect();
-    const clientX = e.clientX - rect.left;
-    const clientY = e.clientY - rect.top;
+    const clientX = (e.clientX - rect.left) * canvasRef.current.width / rect.width;
+    const clientY = (e.clientY - rect.top) * canvasRef.current.height / rect.height;
 
-    const centerX = rect.width / 2 + pan.x;
-    const centerY = rect.height / 2 + pan.y;
+    const centerX = canvasRef.current.width / 2 + pan.x;
+    const centerY = canvasRef.current.height / 2 + pan.y;
 
     const mmX = (clientX - centerX) / (SCALE * zoom) + layoutData.boardWidth / 2;
     const mmY = (clientY - centerY) / (SCALE * zoom) + layoutData.boardHeight / 2;
@@ -88,7 +88,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
   };
 
   // Snap proposed next point to horizontal, vertical, or 45-degree diagonal
-  const snapTo45 = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+  const snapTo45 = useCallback((from: { x: number; y: number }, to: { x: number; y: number }) => {
     if (!snap45) return to;
     const dx = to.x - from.x;
     const dy = to.y - from.y;
@@ -107,7 +107,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
         y: Math.round((from.y + Math.sign(dy) * d) * 2) / 2,
       };
     }
-  };
+  }, [snap45]);
 
   const calculateTraceLength = (trace: PCBTrace) => {
     let length = 0;
@@ -384,14 +384,21 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
     });
 
     ctx.restore();
-  }, [layoutData, selectedCompId, routingStart, routingPoints, mousePos, activeLayer, isRouting, drcErrors, showMeasurements, activeTraceWidth, boardWidthPx, boardHeightPx, boardAnalysis, zoom, pan, snap45]);
+  }, [layoutData, selectedCompId, routingStart, routingPoints, mousePos, activeLayer, isRouting, drcErrors, showMeasurements, activeTraceWidth, boardWidthPx, boardHeightPx, boardAnalysis, zoom, pan, snap45, snapTo45]);
+
+  const canvasPoint = (e: React.MouseEvent) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    return { x: (e.clientX - rect.left) * canvas.width / rect.width, y: (e.clientY - rect.top) * canvas.height / rect.height };
+  };
 
   // Handle canvas mouse actions
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     // Middle-click or Alt+click pans canvas
     if (e.button === 1 || e.altKey) {
       setIsCanvasPanning(true);
-      setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      setPanStart({ x: canvasPoint(e).x - pan.x, y: canvasPoint(e).y - pan.y });
       return;
     }
 
@@ -496,7 +503,7 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
       setRoutingPoints([...routingPoints, nextPoint]);
     } else {
       setIsCanvasPanning(true);
-      setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      setPanStart({ x: canvasPoint(e).x - pan.x, y: canvasPoint(e).y - pan.y });
       onSelectComponent(null);
     }
   };
@@ -507,8 +514,8 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
 
     if (isCanvasPanning) {
       setPan({
-        x: e.clientX - panStart.x,
-        y: e.clientY - panStart.y
+        x: canvasPoint(e).x - panStart.x,
+        y: canvasPoint(e).y - panStart.y
       });
       return;
     }
@@ -725,8 +732,10 @@ export const LayoutEditor: React.FC<LayoutEditorProps> = ({
       }
 
       if (!points) continue;
-      routedTraces.push({ id: `trace_${crypto.randomUUID()}`, net: connection.net, points, width: activeTraceWidth, layer: usedLayer });
-      added++;
+      const candidate: PCBTrace = { id: `trace_${crypto.randomUUID()}`, net: connection.net, points, width: activeTraceWidth, layer: usedLayer };
+      const after = analyzeBoard({ ...layoutData, traces: [...routedTraces, candidate], vias: routedVias });
+      // A bottom route without a plated endpoint/via must never count as SMD connectivity.
+      if (after.airwires.length < analysis.airwires.length) { routedTraces.push(candidate); added++; }
     }
 
     const missing = analyzeBoard({ ...layoutData, traces: routedTraces, vias: routedVias }).airwires.length;
